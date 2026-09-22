@@ -28,6 +28,10 @@ ACTION_LABEL = {
     "AVOID": "回避",
 }
 
+# MATURE 阶段综合分降权系数（实验 knob）。1.0 = 生产行为（默认），
+# 由环境变量 ARK_MATURE_W 控制；仅用于 lab_mature_weight 实验台重放。
+MATURE_WEIGHT = float(os.environ.get("ARK_MATURE_W", "1.0"))
+
 
 def _f(x) -> Optional[float]:
     if x is None:
@@ -152,6 +156,15 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
         return str(arr[i]) if 0 <= i < len(arr) else ""
 
     stage_of = {c: _stage(c) for c in candidates}
+
+    # MATURE 阶段降权（实验 knob，默认关闭）：成熟期主线的综合分乘以系数，
+    # 让它在排名 / 入选阈值 / Top-K 与结算槽位竞争中真实让位。只动 composite，
+    # 不触碰 mainline 等阈值维度（那些决定行业是否被回避，语义不同）。
+    _mw = MATURE_WEIGHT
+    if _mw != 1.0:
+        for c in candidates:
+            if stage_of[c] == "MATURE":
+                row_of[c]["composite"] = float(row_of[c]["composite"]) * _mw
 
     # 主线 / 风险 的横截面分位（用于阈值与归因）
     ml_vals = {c: row_of[c]["mainline"] for c in candidates}

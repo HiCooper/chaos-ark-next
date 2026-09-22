@@ -374,6 +374,10 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                            vol_target: Optional[float] = None,
                            vol_window: int = 60,
                            vol_floor: float = 0.80,
+                           floor_series: Optional[np.ndarray] = None,
+                           entry_gate: Optional[callable] = None,
+                           sid_cooldown: Optional[int] = None,
+                           sid_cooldown_loss_below: float = 0.0,
                            cash_yield: float = 0.015,
                            score_tilt: float = 0.0,
                            max_new_per_day: Optional[int] = None,
@@ -448,6 +452,11 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
         if gate is not None and not gate[b_i]:
             blocked_by_gate += 1
             continue
+        # 行业级入场闸：entry_gate(sid, b_i) 为 False 时不给该行业开新仓。
+        # 只挡新开仓，不触碰任何已有持仓的持有期与卖出时点。
+        if entry_gate is not None and not entry_gate(sid0, b_i):
+            blocked_by_gate += 1
+            continue
         plan[b_i].append({"sw": t["sw_name"], "end": s_i_, "secid": sid0,
                           "score": t.get("composite", 0),
                           "horizon": H, "action": t.get("action"),
@@ -469,6 +478,10 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
     ret_hist: List[float] = []
     exposure_log: List[float] = []
     hold_count: List[int] = []
+    # 亏损冷却：sid 在亏损卖出后被禁入 N 个交易日（针对「反复给同一只
+    # 跌透的主线接飞刀」——2023 传媒 24 连亏、2026 有色 13 连买的复盘结论）。
+    sid_block_until: Dict[str, int] = {}
+    blocked_by_cooldown = 0
 
     def _bench_ret(from_i: int, to_i: int) -> Optional[float]:
         """同期基准 ETF 的净收益（同一成本口径），用于单笔超额。"""
@@ -520,6 +533,10 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                     "ret": round(net, 5) if net is not None else None,
                     "ex": round(net - bre, 5) if (net is not None and bre is not None) else None,
                 })
+                # 亏损冷却触发：该 sid 禁入至 k + cooldown
+                if (sid_cooldown is not None and net is not None
+                        and net < sid_cooldown_loss_below):
+                    sid_block_until[h["sid"]] = k + sid_cooldown
         holdings = new_holdings
 
         # 2) 新开仓：今日开盘买入，当日收益 = 收盘/开盘
@@ -539,6 +556,10 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                     if sum(1 for x in holdings if x["sid"] == sid) >= max_per_sid:
                         blocked_by_sid_cap += 1
                         continue
+                # 亏损冷却：该 sid 刚亏损卖出，仍在禁入期内
+                if sid_cooldown is not None and sid_block_until.get(sid, -1) >= k:
+                    blocked_by_cooldown += 1
+                    continue
                 o = book.open_(sid, k)
                 if not o:
                     continue
@@ -578,11 +599,16 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
             r_raw = 0.0
 
         # 4) 波动目标：高波动期按比例降仓，剩余部分计现金收益（无前视）
+        #    floor_series：逐日暴露下限（长度=len(dates)，可来自趋势/回撤等状态变量）。
+        #    传入时覆盖固定 vol_floor——这是「连续降暴露」类风控的统一入口，
+        #    只改变暴露水平，不改变任何买卖时点与标的。floor_series[k] 必须只依赖
+        #    第 k 日之前（≤k-1）可得的信息，由调用方保证。
         expo = 1.0
+        floor_k = float(floor_series[k]) if floor_series is not None else vol_floor
         if vol_target is not None and len(ret_hist) >= 20:
             sig = float(np.std(ret_hist[-vol_window:]) * np.sqrt(252))
             if sig > 1e-6:
-                expo = float(np.clip(vol_target / sig, vol_floor, 1.0))
+                expo = float(np.clip(vol_target / sig, floor_k, 1.0))
         r = expo * r_raw + (1.0 - expo) * rf
         cur *= (1.0 + r)
         ret_hist.append(r)
@@ -623,11 +649,14 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
     stats["blocked_by_sid_cap"] = blocked_by_sid_cap
     stats["max_per_sid"] = max_per_sid
     stats["blocked_by_gate"] = blocked_by_gate
+    stats["blocked_by_cooldown"] = blocked_by_cooldown
+    stats["sid_cooldown"] = sid_cooldown
     stats["market_gate"] = bool(market_gate)
     stats["max_holdings"] = max_holdings
     stats["risk_parity"] = bool(risk_parity)
     stats["vol_target"] = vol_target
     stats["vol_floor"] = vol_floor if vol_target is not None else None
+    stats["floor_series"] = floor_series is not None
     stats["avg_exposure"] = round(float(np.mean(exposure_log)), 3) if exposure_log else None
     stats["avg_holdings"] = round(float(np.mean(hold_count)), 2) if hold_count else None
     # 实际投入比例 = 持仓数/容量 × 波动目标暴露系数（前端辅助轴直接用这一列）

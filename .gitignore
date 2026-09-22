@@ -15,7 +15,17 @@ web/tsconfig.tsbuildinfo
 cache/
 
 # L0 一手数据快照（89MB，可由 engine/datasource_sw.py 重新抓取，不入库）
-data/
+# 必须写成 /data/（仅根目录）：写成 data/ 会连带忽略 web/public/data 与 site/data，
+# 使 experiments.json 等登记簿文件静默不入库。
+/data/
+
+# L3 派生逐日数据（约 110MB × 2 份，可由 engine 重跑生成，不入库）
+# 上层 history/review/today/experiments 四个 json 仍入库（体积小、前端直接依赖）
+web/public/data/day/
+site/data/day/
+
+# WorkBuddy 应用描述文件（含本机绝对路径，不入库）
+.wbapp_*.genie
 
 # WorkBuddy 会话数据（记忆/自动化，不入库）
 .workbuddy/

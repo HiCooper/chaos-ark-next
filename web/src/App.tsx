@@ -3,11 +3,13 @@ import Today from './Today'
 import Review from './Review'
 import Engine from './Engine'
 import Calendar from './Calendar'
+import Lab from './Lab'
 
 const TABS = [
   { k: 'today', label: '今日结论' },
   { k: 'review', label: '复盘' },
   { k: 'engine', label: '引擎' },
+  { k: 'lab', label: '实验' },
 ]
 
 export default function App() {
@@ -15,6 +17,7 @@ export default function App() {
   const [today, setToday] = useState<any>(null)
   const [review, setReview] = useState<any>(null)
   const [hist, setHist] = useState<any>(null)
+  const [lab, setLab] = useState<any>(null)
   const [err, setErr] = useState<string>('')
 
   // 研判页状态：日历选中的交易日（默认最新），历史日详情按需懒加载并缓存
@@ -32,6 +35,8 @@ export default function App() {
       .catch((e) => setErr(String(e)))
     // 历史结论索引（日历 + 复盘页「每日结论带」用）：缺了不影响主页面，故单独失败不阻断
     fetch('data/history.json').then((r) => r.json()).then(setHist).catch(() => setHist(null))
+    // 实验登记簿：独立失败不阻断主页面
+    fetch('data/experiments.json').then((r) => r.json()).then(setLab).catch(() => setLab(null))
   }, [])
 
   // 今日/历史日数据就位后，把日历选中态对齐到最新交易日
@@ -105,6 +110,7 @@ export default function App() {
 
         {!err && review && tab === 'review' && <Review data={review} hist={hist} />}
         {!err && review && tab === 'engine' && <Engine data={review} today={today} />}
+        {tab === 'lab' && <Lab data={lab} />}
       </div>
     </>
   )

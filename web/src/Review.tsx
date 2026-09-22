@@ -118,6 +118,18 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const viewNav = allNav.slice(lo, hi + 1).map((v) => v / navBase)
   const viewBench = allBench.slice(lo, hi + 1).map((v) => v / benchBase)
 
+  // 明细表右上角的年化收益：全区间直接用结算层 cagr（引擎同一来源）；
+  // 选具体年份则用该年区间净值实时年化（起点 = 上一年末收盘，与图表归一化口径一致）
+  const segAnn: number | null = (() => {
+    if (year === 'all') return typeof sts.cagr === 'number' ? sts.cagr : null
+    const n0 = allNav[lo - 1] ?? allNav[lo]
+    const n1 = allNav[hi]
+    if (!n0 || !n1 || !allDates[hi]) return null
+    const days = (new Date(allDates[hi]).getTime() - new Date(allDates[lo]).getTime()) / 86400000 + 1
+    if (days <= 0) return null
+    return Math.pow(n1 / n0, 365 / days) - 1
+  })()
+
   const idxOfDate: Record<string, number> = {}
   allDates.forEach((d, i) => { idxOfDate[d] = i })
 
@@ -504,6 +516,11 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             <span className="muted">
               {year === 'all' ? '全区间' : year} · 共 {tradeRows.length} 笔
               {shownTrades.length < tradeRows.length ? `，显示前 ${shownTrades.length} 笔` : ''}
+              {segAnn != null && (
+                <> · 年化{' '}
+                  <b style={{ color: segAnn >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(segAnn)}</b>
+                </>
+              )}
             </span>
           }
         >

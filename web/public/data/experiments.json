@@ -1,0 +1,270 @@
+{
+  "generated_at": "2026-09-22 10:10",
+  "baseline_version": "ark-1.3.0-stage",
+  "baseline_metrics": { "cagr": 0.0832, "maxdd": -0.3643, "sharpe": 0.496, "note": "申万官方+新浪数据源基线（2016 起）" },
+  "principles": {
+    "goals": [
+      "提升年化收益（基准 8.32%）",
+      "降低最大回撤（基准 -36.4%）"
+    ],
+    "rules": [
+      "不能过度拟合市场走势：寻求通用的趋势判断，熊市和牛市都要稳定达标，单一耀眼年份的增益默认视为嫌疑而非证据",
+      "效益必须区分「幸存者偏差」与「统计意义的真实效益」：实验台必须先精确复现生产基线，再看方向是否跨参数档一致、跨年份一致、参数是否单调响应；非单调 = 噪声特征",
+      "口径变化必须显式披露：换数据源、换结论基线都不许悄悄改数字",
+      "采用新参数或方案必须经 boss 确认，确认后执行基准 version 升级（config 显式参数 + ENGINE_VERSION bump + 全量重跑）"
+    ]
+  },
+  "experiments": [
+    {
+      "id": "mature-weight",
+      "date": "2026-09-22",
+      "title": "信号层 MATURE 降权",
+      "layer": "信号层（结论生成）",
+      "vs": "基准 version: ark-1.3.0-stage（年化 8.32% / 回撤 -36.4% / Sharpe 0.496）",
+      "status": "待拍板",
+      "hypothesis": "成熟期（MATURE）主线接近一年高位、兑现窗口临近，其结论质量差；对这类候选的综合分降权，让它们在排名、入选阈值、Top-K 与结算槽位竞争中真实让位，可改善下行年份（2026 -15.3%、2024 -9.5%）而不伤进攻年。",
+      "params": [
+        { "k": "mature_weight", "v": "1.0 / 0.85 / 0.7 / 0.5 / 0.0", "note": "只缩放 stage==MATURE 候选的 composite，mainline 等阈值维度不动；每档全量重放信号+结算（非事后加权）" }
+      ],
+      "results": [
+        { "label": "w=0.85（温和降权）", "cagr": 0.0978, "maxdd": -0.3643, "sharpe": 0.572, "note": "结论 1773→1523" },
+        { "label": "w≤0.7（三档完全相同，禁言悬崖）", "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "结论 1773→1469；2026 -15.3%→-9.5%、2024 -9.5%→-5.5%、2016 -5.3%→0.0%；代价：2020 56.2%→46.0%、2025 36.8%→31.0%" }
+      ],
+      "goals": {
+        "annualized": "↑ +1.3~1.5pp，达标",
+        "drawdown": "→ 持平至略降（-35.8%），不恶化"
+      },
+      "robustness": "抗过拟合检验：① 对照 w=1.0 与生产逐点一致（重放确定性）；② 方向跨档一致——所有降权档年化/Sharpe/回撤全部不差于生产；③ 单笔信号胜率几乎不变（47.3%→47.0%），改善全部来自组合成分替换（槽位让给后续候选），机制可解释；④ 逐年 7 改善 / 3 变差。瑕疵如实记录：w=0.85 与 w≤0.7 逐年差异非单调（2025: 42.6% vs 31.0%），剂量间差异属槽位轮转噪声；w≤0.7 三档相同说明剂量响应有悬崖，最优剂量不可精调，但「是否降权」这个二元决策的效应方向是稳定的。",
+      "conclusion": "建议采用 w=0.7（等 boss 确认）。落地形态：config.CLASSIFY 显式参数 mature_weight + ENGINE_VERSION bump + 全量重跑披露新基线。",
+      "artifacts": ["engine/lab_mature_weight.py", "engine/classify.py (MATURE_WEIGHT knob)", "cache/lab_mature_weight.json"]
+    },
+    {
+      "id": "stage-horizon",
+      "date": "2026-09-22",
+      "title": "阶段自适应持有周期（外部方案对比）",
+      "layer": "结算层（持有期覆盖）",
+      "vs": "基准 version: ark-1.3.0-stage（年化 8.32% / 回撤 -36.4%）",
+      "status": "已否决",
+      "hypothesis": "外部方案：按行业周期阶段定持有周期——萌发 60-90 / 确认 40-60 / 中期 25-40 / 成熟 15-25 个交易日，低位耐心、高位快兑现。",
+      "params": [
+        { "k": "阶段→周期映射", "v": "定点中值 / 区间夹取 / 只缩成熟期 / 只延萌发期 / 只缩不延，共 10 个变体", "note": "当前 horizon 由历史相似状态匹配从 [60,80,100] 挑选，与阶段解耦；本实验测解耦假设的增量价值" }
+      ],
+      "results": [
+        { "label": "全部定点中值", "cagr": 0.0689, "maxdd": -0.4007, "note": "2026 恶化到 -27.3%" },
+        { "label": "只缩成熟期→20 日", "cagr": 0.085, "maxdd": -0.3643, "note": "+0.18pp，但 MATURE 目标 15/20/25 → -0.24/+0.18/-0.24pp，非单调" },
+        { "label": "组合最优假象（MATURE20+MID夹取）", "cagr": 0.1001, "maxdd": -0.3664, "note": "增益几乎全在 2020 单年 +44pp，2021 后逐年合计 -18.4pp，样本外直接失效" }
+      ],
+      "goals": {
+        "annualized": "→ 无真实提升（表面提升为单年侥幸）",
+        "drawdown": "→ 无改善，全形式版反而恶化"
+      },
+      "robustness": "抗过拟合检验：① 参数响应非单调（噪声特征）；② 组合版增益集中于单一年份（幸存者偏差典型形态）；③ 机制反向——下行年缩周期→到期卖出→信号再触发→重进同一下跌主线→换手亏损放大。另发现结构性事实：成交 396 笔中 MID 261 / MATURE 115 / SPROUT 3 / CONFIRM 0，动量入选天然不处早期，方案的确认期区间零样本可测。",
+      "conclusion": "不建议采用。教训：缩短周期在下行市的第二阶效应（换手重进）会吃掉兑现窗口的全部理论收益。",
+      "artifacts": ["engine/lab_stage_horizon.py", "cache/lab_stage_horizon.json"]
+    },
+    {
+      "id": "downside-portfolio",
+      "date": "2026-09-22",
+      "title": "下行市场组合层优化（13 变体扫描）",
+      "layer": "结算层（暴露/入场/冷却）",
+      "vs": "基准 version: ark-1.3.0-stage（年化 8.32% / 回撤 -36.4%）",
+      "status": "已否决",
+      "hypothesis": "组合在下行年亏损（2016/2017/2023/2024/2026），尝试用降低暴露、限制入场、亏损冷却三类手段修补。",
+      "params": [
+        { "k": "暴露类", "v": "固定 floor 0.75 / 趋势连续 floor / 回撤比例 floor / 环境自适应 floor（PANIC 0.35）", "note": "floor_series 参数，只改权重不改买卖时点" },
+        { "k": "入场闸类", "v": "行业 MA120 闸 / 行业+大盘闸 / 折价禁追高 / 跌透闸 -15% / 跌透闸 -25%", "note": "entry_gate 参数，只挡新仓不动持仓" },
+        { "k": "冷却类", "v": "同标的亏损冷却 20 / 40 / 60 日", "note": "sid_cooldown 参数" }
+      ],
+      "results": [
+        { "label": "全部 13 个变体", "note": "无一构成 Pareto 改进。唯一接近中性的是 floor 0.75（年化 -0.24pp、回撤 +1.6pp，在噪声内）；跌透闸 -15% 年化崩至 4.5%；环境自适应 floor 2026 反而更差" }
+      ],
+      "goals": {
+        "annualized": "→ 全部下降或持平",
+        "drawdown": "→ 无真实改善（入场闸类反而恶化到 -39%/-43%）"
+      },
+      "robustness": "抗过拟合检验：结论高度一致——深崩后的反弹正是这套系统收益大头的来源，入场闸等于自废武功；冷却挡掉的槽位立刻被下一个热门标的填上。诊断发现亏损真因是主线执念（2023 全年只交易 4 只 ETF、传媒一只买 24 次），属于信号层问题，组合层下游修补会同等伤害上行年。",
+      "conclusion": "不建议采用任何一项。该结论直接引出了信号层实验（MATURE 降权）的正确方向。",
+      "artifacts": ["engine/lab_downside.py", "cache/lab_downside.json", "engine/settlement.py (floor_series/entry_gate/sid_cooldown 实验参数，默认关闭)"]
+    },
+    {
+      "id": "open-edge",
+      "date": "2026-09-22",
+      "title": "open-edge 结算修复（方法论修正）",
+      "layer": "结算层（入账口径）",
+      "vs": "基准 version: ark-1.3.0-stage",
+      "status": "已采用",
+      "hypothesis": "卖出日超出数据末端的结论此前被整笔丢弃，等于「提前预知走不完周期所以不买」，现实中 T+1 买入已经发生。",
+      "params": [
+        { "k": "入账规则", "v": "B 照发、持仓在场逐日按收盘价计值、到期才产生 S", "note": "单笔胜率统计仍只用完整结算交易，口径不污染" }
+      ],
+      "results": [
+        { "label": "修复后", "note": "2026-06-26 后 B 0→26 笔；在途持仓 178 条、期末在场 32 笔；曲线右端不再被人为清零失真" }
+      ],
+      "goals": {
+        "annualized": "口径修正（期末浮盈计值，非收益优化）",
+        "drawdown": "同上"
+      },
+      "robustness": "正确性修复，无需过拟合检验；合成账簿走真实代码路径验证 + 生产重放双确认。",
+      "conclusion": "已采用。复盘看年化时注意：曲线右端是在途持仓的浮盈计值，与最终结算值会有差异。",
+      "artifacts": ["engine/settlement.py", "engine/review.py", "engine/rebuild_review.py"]
+    },
+    {
+      "id": "datasource-sw",
+      "date": "2026-09-21",
+      "title": "数据源切换：东财 BK → 申万官方 + 新浪",
+      "layer": "数据层（L0/L1）",
+      "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
+      "status": "已采用",
+      "hypothesis": "东财 push2his 单点限流风险不可接受，需替代数据源。实测：申万官方日K（2004 至今）、新浪 ETF 前复权日K、新浪基准指数全通路可用；腾讯无申万指数、新浪 sw2 前缀已失效。",
+      "params": [
+        { "k": "数据源", "v": "index_hist_sw / fund_etf_hist_sina / stock_zh_index_daily（akshare）", "note": "白名单 92 个赛道名对齐 90 个（66 直接命中 + Ⅱ/Ⅲ 后缀剥除 + 显式改名表）" },
+        { "k": "数据分层", "v": "L0 data/raw 不可变一手层（manifest sha256 溯源）→ L1 面板 → L2 特征 → L3 导出", "note": "docs/DATA-LAYERS.md" }
+      ],
+      "results": [
+        { "label": "新基线", "cagr": 0.0832, "maxdd": -0.3643, "note": "8.76%/-33.11% → 8.32%/-36.43%，为换面板口径差，非策略变化，已显式披露" }
+      ],
+      "goals": {
+        "annualized": "口径变化：-0.44pp（换源换面板）",
+        "drawdown": "口径变化：-3.3pp"
+      },
+      "robustness": "必要性切换而非效果优化；换回东财需显式重跑并再次披露。信号层代码命名空间 90.BKxxxx → 801xxx。",
+      "conclusion": "已采用，此为新基线。残余风险：申万官方接口也可能限流，备用源问题悬而未决。",
+      "artifacts": ["engine/datasource_sw.py", "engine/rawstore.py", "docs/DATA-LAYERS.md"]
+    },
+    {
+      "id": "conclusion-filter",
+      "date": "2026-09 早期会话",
+      "title": "结论前置过滤（自相矛盾 / 追高降级）",
+      "layer": "信号层（结论过滤）",
+      "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
+      "status": "已采用",
+      "hypothesis": "只剔除「事前就自相矛盾 / 明显追高」的结论，不做择时：结论自带失效条件写着「rs120 转负→作废」，事前给出建仓结论等于自相矛盾；买在近 60 日区间顶部 5% 属追高。",
+      "params": [
+        { "k": "rs120_min", "v": "0.0", "note": "被剔除结论实测胜率仅 4.8%、平均超额 -7.91%" },
+        { "k": "pos60_max", "v": "0.95", "note": "阈值 0.88~0.98 为宽平台；剔除后年化 +2.9pp、最大回撤 -3.2pp" }
+      ],
+      "results": [
+        { "label": "采用后", "note": "年化 +2.9pp、回撤 -3.2pp（老东财基线）" }
+      ],
+      "goals": {
+        "annualized": "↑ +2.9pp，达标",
+        "drawdown": "↓ -3.2pp，达标"
+      },
+      "robustness": "抗过拟合正面案例：同批测试的 pos250 / 60 日回撤深度虽然胜率分离度更大，但做成硬规则后组合年化与回撤同时劣化（最大回撤掉到 -44%）——识别为「概率梯度」而非「可切除的坏样本」，未落地。阈值选宽平台中点而非最优点。",
+      "conclusion": "已采用。",
+      "artifacts": ["engine/classify.py", "engine/config.py (CONCLUSION_FILTER)", "engine/lab_opt*.py"]
+    },
+    {
+      "id": "portfolio-params",
+      "date": "2026-09 早期会话",
+      "title": "组合执行参数：score_tilt + 每日新建仓上限",
+      "layer": "结算层（配权/节奏）",
+      "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
+      "status": "已采用",
+      "hypothesis": "高分结论应占更大权重（score_tilt）；信号密集日结论质量参差，限制每日新建仓数避免资金稀释到低分结论。",
+      "params": [
+        { "k": "score_tilt", "v": "0.5", "note": "tilt∈[0.25,0.5] 是宽平台而非尖峰；年化 +1~2pp、回撤小幅改善；完全不改变成交集合与买卖时点" },
+        { "k": "max_new_per_day", "v": "2", "note": "年化 +0.9pp、回撤 -0.3pp（总容量上限不变）" }
+      ],
+      "results": [
+        { "label": "采用后", "note": "合计年化 +2~3pp、回撤小幅改善（老东财基线）" }
+      ],
+      "goals": {
+        "annualized": "↑，达标",
+        "drawdown": "↓ 小幅，达标"
+      },
+      "robustness": "参数平台宽（非单点最优），且 score_tilt 不改变成交集合——机制透明。",
+      "conclusion": "已采用。",
+      "artifacts": ["engine/config.py (PORTFOLIO)", "engine/settlement.py (score_tilt)"]
+    },
+    {
+      "id": "risk-control",
+      "date": "2026-09 早期会话",
+      "title": "风险平价 + 波动目标降仓（同批否决止损/熔断/闸门）",
+      "layer": "结算层（权重与总暴露）",
+      "vs": "旧基线（东财）：组合最深回撤 -39.5%（2021-09→2022-04）",
+      "status": "已采用",
+      "hypothesis": "回撤根因不是持仓结构（回撤期组合已接近容量上限、相当分散），而是高波动期仍然满仓；用波动目标连续降仓。",
+      "params": [
+        { "k": "risk_parity", "v": "true（1/σ 风险预算等价）" },
+        { "k": "vol_target / vol_floor", "v": "0.16 / 0.80", "note": "floor 敏感性 0.70~1.00 全档扫描公开在引擎页（回撤 vs 年化权衡曲线），不隐藏取舍" }
+      ],
+      "results": [
+        { "label": "采用后", "note": "回撤显著改善且不牺牲年化；方向判断胜率与成交笔数不变（只改权重与暴露）" }
+      ],
+      "goals": {
+        "annualized": "→ 基本不变",
+        "drawdown": "↓ 显著，达标"
+      },
+      "robustness": "同批反事实扫描中，移动止损、回撤熔断、提高信号门槛、限制同行业建仓全部让回撤更差——它们不降低总暴露，只把仓位在下跌中反复洗牌。这段否定证据是本实验可信度的关键。",
+      "conclusion": "已采用。",
+      "artifacts": ["engine/config.py (RISK_CONTROL)", "engine/settlement.py"]
+    },
+    {
+      "id": "market-gate",
+      "date": "2026-09 早期会话",
+      "title": "MA200 大盘二元闸门",
+      "layer": "结算层（入场开关）",
+      "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
+      "status": "已否决",
+      "hypothesis": "只在基准位于 MA200 上方时新建仓，熊市空仓避险。",
+      "params": [
+        { "k": "market_gate", "v": "true（基准 < MA200 禁止新仓）", "note": "生产保持 false" }
+      ],
+      "results": [
+        { "label": "开启后", "cagr": 0.0515, "maxdd": -0.64, "note": "年化掉 3.6pp、回撤反而恶化到 -64%" }
+      ],
+      "goals": {
+        "annualized": "↓↓",
+        "drawdown": "↑↑ 反而恶化"
+      },
+      "robustness": "A股急跌后暴力反弹，二元门控永远踏空反弹段；「开门后集中涌入」还推高建仓成本。",
+      "conclusion": "不建议采用。教训沉淀：市场状态调节用连续函数（波动目标），不用二元开关。",
+      "artifacts": ["engine/settlement.py (bench_ma_gate)", "web/public/data/review.json (gated 对照)"]
+    },
+    {
+      "id": "horizon-penalty",
+      "date": "2026-09 早期会话",
+      "title": "持有周期估计的回撤惩罚系数",
+      "layer": "信号层（周期估计）",
+      "vs": "基准 version: ark-1.2.x（历史相似状态匹配选周期）",
+      "status": "已采用",
+      "hypothesis": "持有周期按「风险调整期望」在候选窗里择优，回撤惩罚系数需要标定。",
+      "params": [
+        { "k": "回撤惩罚系数", "v": "0.25（弃 0.6）", "note": "0.6 会系统性偏向最短窗口（10 日平均超额 -0.05%），而 40/60 日窗口才是期望为正的区间（60 日 +11.35%）" }
+      ],
+      "results": [
+        { "label": "0.25 落地", "note": "周期选择回归正期望区间" }
+      ],
+      "goals": {
+        "annualized": "间接贡献（周期选择质量）",
+        "drawdown": "间接贡献"
+      },
+      "robustness": "标定依据是候选窗的期望结构而非组合回测拟合，过拟合风险低。",
+      "conclusion": "已采用。",
+      "artifacts": ["engine/horizon.py"]
+    },
+    {
+      "id": "stage-infra",
+      "date": "2026-09-21",
+      "title": "行业周期阶段标注（基础设施）",
+      "layer": "信号层（展示标注）",
+      "vs": "基准 version: ark-1.3.0-stage（即本特性引入的版本号）",
+      "status": "已采用",
+      "hypothesis": "行业所处周期阶段（萌芽/确认/中期/成熟）有判断价值，但先用自分位阈值做成纯展示标注，不动评分——先让数据说话，再决定是否进入决策。",
+      "params": [
+        { "k": "compute_stage", "v": "SPROUT/MATURE/CONFIRM/MID，阈值全部用自身历史分位（避免绝对参数过拟合）", "note": "ENGINE_VERSION ark-1.2.0-ranking → ark-1.3.0-stage" }
+      ],
+      "results": [
+        { "label": "产出", "note": "前端阶段列 + PickCard 标注；随后支撑了阶段周期实验（否决）与 MATURE 降权实验（待拍板）" }
+      ],
+      "goals": {
+        "annualized": "不适用（展示层）",
+        "drawdown": "不适用"
+      },
+      "robustness": "零分位阈值设计刻意规避绝对参数；后续两个消费它的实验一好一坏，说明基础设施本身中立。",
+      "conclusion": "已采用（纯展示，不影响结论）。",
+      "artifacts": ["engine/scoring.py (compute_stage)", "engine/pipeline.py", "web/src/Today.tsx"]
+    }
+  ]
+}
