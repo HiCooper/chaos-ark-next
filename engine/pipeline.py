@@ -40,7 +40,11 @@ import review as RV  # noqa: E402
 import settlement as ST  # noqa: E402
 import rules as RULES  # noqa: E402
 
-ENGINE_VERSION = "ark-1.3.0-stage"
+# 版本号 = 口径版本。改动任何影响结论的模块（信号/结算/数据源/面板口径）都必须 bump，
+# 它同时是 day/<date>.json 的有效性标记（不匹配即失效 → 全量重放）。
+# 演进：ark-1.2.0-ranking → ark-1.3.0-stage（阶段标注，展示层）
+#       → ark-1.4.0-mature-weight（MATURE 降权落参，信号层口径变更）
+ENGINE_VERSION = "ark-1.4.0-mature-weight"
 
 
 def config_hash() -> str:

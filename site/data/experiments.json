@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-09-22 10:10",
-  "baseline_version": "ark-1.3.0-stage",
-  "baseline_metrics": { "cagr": 0.0832, "maxdd": -0.3643, "sharpe": 0.496, "note": "申万官方+新浪数据源基线（2016 起）" },
+  "generated_at": "2026-09-22 16:40",
+  "baseline_version": "ark-1.4.0-mature-weight",
+  "baseline_metrics": { "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "申万官方+新浪数据源基线（2016 起），含 MATURE 降权 w=0.7" },
   "principles": {
     "goals": [
-      "提升年化收益（基准 8.32%）",
-      "降低最大回撤（基准 -36.4%）"
+      "提升年化收益（基准 9.59%）",
+      "降低最大回撤（基准 -35.8%）"
     ],
     "rules": [
       "不能过度拟合市场走势：寻求通用的趋势判断，熊市和牛市都要稳定达标，单一耀眼年份的增益默认视为嫌疑而非证据",
@@ -16,27 +16,54 @@
   },
   "experiments": [
     {
+      "id": "baseline-1.4.0",
+      "date": "2026-09-22",
+      "title": "基准升级：ark-1.3.0-stage → ark-1.4.0-mature-weight",
+      "layer": "基准版本管理（非实验，是落参动作的记录）",
+      "vs": "上一基准 ark-1.3.0-stage（年化 8.32% / 回撤 -36.43% / Sharpe 0.496 / 信号胜率 47.32%）",
+      "status": "已采用",
+      "hypothesis": "把已获 boss 确认的正向实验「信号层 MATURE 降权」按基准 version 升级协议正式落地，并如实披露新基线与代价。",
+      "params": [
+        { "k": "mature_weight", "v": "0.7", "note": "写进 config.CLASSIFY 显式节（不用 env）" },
+        { "k": "ENGINE_VERSION", "v": "ark-1.3.0-stage → ark-1.4.0-mature-weight", "note": "版本号 = 口径版本，同时是 day/<date>.json 的有效性标记；不匹配即失效 → 自动全量重放" }
+      ],
+      "results": [
+        { "label": "年化收益", "note": "8.32% → 9.59%（+1.27pp）" },
+        { "label": "最大回撤", "note": "-36.43% → -35.75%（改善 0.68pp）" },
+        { "label": "Sharpe / 波动 / Calmar", "note": "0.496 → 0.567；年化波动 20.22% → 19.50%；Calmar 0.228 → 0.268" },
+        { "label": "累计收益", "note": "127.9% → 157.1%" },
+        { "label": "信号胜率 / 结论数", "note": "47.32%（1773 条）→ 47.04%（1469 条）；ETF 结算超额胜率 45.36% → 44.70%。单笔质量基本不变，收益改善来自组合成分替换（槽位让给后续候选）" },
+        { "label": "逐年（旧 → 新）", "note": "2016 -5.3%→0.0% (+5.3)、2017 -7.8%→-6.4% (+1.4)、2022 -11.0%→-10.5% (+0.5)、2023 -3.3%→-2.3% (+1.0)、2024 -9.5%→-5.5% (+4.0)、2026 -15.3%→-9.5% (+5.9)、2021 34.3%→39.5% (+5.2)；代价：2020 56.2%→46.0% (-10.2)、2025 36.8%→31.0% (-5.7)、2019 38.1%→37.6% (-0.5)；2018 持平。改善 7 年 / 变差 3 年" }
+      ],
+      "goals": { "annualized": "↑ +1.27pp，达标", "drawdown": "↓ -0.68pp，达标" },
+      "robustness": "本次升级不改数据结构、不改数据窗口（面板末端仍为 2026-09-21），只改信号层一个系数，故新旧基线逐项可比。实验台 w=0.7 的预测与落参后生产实测逐项吻合（年化/回撤/Sharpe 完全相同），重放确定性成立。代价如实记录：2020 / 2025 两个进攻年让出 5~10pp —— 降权把成熟期主线让位给后续候选，在强势单边年里会换成质量略低的标的；换来的是 6 个年份的改善与整体年化 +1.27pp。",
+      "conclusion": "已采用。协议四步齐备：① 参数入 config 显式节；② ENGINE_VERSION bump；③ 全量重放 2598 天（复用 0，因 config_hash 与 engine_version 同时变更）；④ 基线数字与代价披露。",
+      "artifacts": ["engine/config.py", "engine/classify.py", "engine/pipeline.py (ENGINE_VERSION)", "web/public/data/review.json"]
+    },
+    {
       "id": "mature-weight",
       "date": "2026-09-22",
       "title": "信号层 MATURE 降权",
       "layer": "信号层（结论生成）",
       "vs": "基准 version: ark-1.3.0-stage（年化 8.32% / 回撤 -36.4% / Sharpe 0.496）",
-      "status": "待拍板",
+      "status": "已采用",
       "hypothesis": "成熟期（MATURE）主线接近一年高位、兑现窗口临近，其结论质量差；对这类候选的综合分降权，让它们在排名、入选阈值、Top-K 与结算槽位竞争中真实让位，可改善下行年份（2026 -15.3%、2024 -9.5%）而不伤进攻年。",
       "params": [
-        { "k": "mature_weight", "v": "1.0 / 0.85 / 0.7 / 0.5 / 0.0", "note": "只缩放 stage==MATURE 候选的 composite，mainline 等阈值维度不动；每档全量重放信号+结算（非事后加权）" }
+        { "k": "mature_weight", "v": "1.0 / 0.85 / 0.7 / 0.5 / 0.0", "note": "只缩放 stage==MATURE 候选的 composite，mainline 等阈值维度不动；每档全量重放信号+结算（非事后加权）" },
+        { "k": "采用档", "v": "0.7", "note": "已写入 config.CLASSIFY['mature_weight']（显式参数，非 env）" }
       ],
       "results": [
         { "label": "w=0.85（温和降权）", "cagr": 0.0978, "maxdd": -0.3643, "sharpe": 0.572, "note": "结论 1773→1523" },
-        { "label": "w≤0.7（三档完全相同，禁言悬崖）", "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "结论 1773→1469；2026 -15.3%→-9.5%、2024 -9.5%→-5.5%、2016 -5.3%→0.0%；代价：2020 56.2%→46.0%、2025 36.8%→31.0%" }
+        { "label": "w≤0.7（三档完全相同，禁言悬崖）", "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "结论 1773→1469；2026 -15.3%→-9.5%、2024 -9.5%→-5.5%、2016 -5.3%→0.0%；代价：2020 56.2%→46.0%、2025 36.8%→31.0%" },
+        { "label": "落参后生产实测（w=0.7，ark-1.4.0-mature-weight）", "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "与实验台预测逐项吻合；vol 20.22%→19.50%、Calmar 0.228→0.268、累计收益 127.9%→157.1%；信号胜率 47.32%(1773)→47.04%(1469)" }
       ],
       "goals": {
-        "annualized": "↑ +1.3~1.5pp，达标",
-        "drawdown": "→ 持平至略降（-35.8%），不恶化"
+        "annualized": "↑ 落参实测 +1.27pp（8.32% → 9.59%），达标",
+        "drawdown": "↓ 落参实测 -0.68pp（-36.43% → -35.75%），达标"
       },
       "robustness": "抗过拟合检验：① 对照 w=1.0 与生产逐点一致（重放确定性）；② 方向跨档一致——所有降权档年化/Sharpe/回撤全部不差于生产；③ 单笔信号胜率几乎不变（47.3%→47.0%），改善全部来自组合成分替换（槽位让给后续候选），机制可解释；④ 逐年 7 改善 / 3 变差。瑕疵如实记录：w=0.85 与 w≤0.7 逐年差异非单调（2025: 42.6% vs 31.0%），剂量间差异属槽位轮转噪声；w≤0.7 三档相同说明剂量响应有悬崖，最优剂量不可精调，但「是否降权」这个二元决策的效应方向是稳定的。",
-      "conclusion": "建议采用 w=0.7（等 boss 确认）。落地形态：config.CLASSIFY 显式参数 mature_weight + ENGINE_VERSION bump + 全量重跑披露新基线。",
-      "artifacts": ["engine/lab_mature_weight.py", "engine/classify.py (MATURE_WEIGHT knob)", "cache/lab_mature_weight.json"]
+      "conclusion": "已采用 w=0.7（2026-09-22 boss 确认）。落地：config.CLASSIFY['mature_weight']=0.7（显式参数）+ ENGINE_VERSION ark-1.3.0-stage → ark-1.4.0-mature-weight + 全量重放 2598 天。新基线：年化 9.59% / 回撤 -35.75% / Sharpe 0.567，两核心目标同时达标。",
+      "artifacts": ["engine/config.py (CLASSIFY['mature_weight']=0.7)", "engine/classify.py (MATURE_WEIGHT，读 config；env ARK_MATURE_W 仅作实验台覆盖)", "engine/lab_mature_weight.py", "cache/lab_mature_weight.json"]
     },
     {
       "id": "stage-horizon",

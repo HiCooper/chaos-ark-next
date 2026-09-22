@@ -28,9 +28,12 @@ ACTION_LABEL = {
     "AVOID": "回避",
 }
 
-# MATURE 阶段综合分降权系数（实验 knob）。1.0 = 生产行为（默认），
-# 由环境变量 ARK_MATURE_W 控制；仅用于 lab_mature_weight 实验台重放。
-MATURE_WEIGHT = float(os.environ.get("ARK_MATURE_W", "1.0"))
+# MATURE 阶段综合分降权系数。**生产值在 config.CLASSIFY["mature_weight"]**
+# （2026-09-22 落参 0.7，依据实验 lab_mature_weight，boss 确认采用）。
+# 环境变量 ARK_MATURE_W 只作实验台覆盖入口（lab_mature_weight.py 用它复现各档变体），
+# 不是生产配置通道 —— 要改生产口径请改 config，别用 env。
+MATURE_WEIGHT = float(os.environ.get(
+    "ARK_MATURE_W", C.CLASSIFY.get("mature_weight", 1.0)))
 
 
 def _f(x) -> Optional[float]:
@@ -157,9 +160,10 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
 
     stage_of = {c: _stage(c) for c in candidates}
 
-    # MATURE 阶段降权（实验 knob，默认关闭）：成熟期主线的综合分乘以系数，
-    # 让它在排名 / 入选阈值 / Top-K 与结算槽位竞争中真实让位。只动 composite，
-    # 不触碰 mainline 等阈值维度（那些决定行业是否被回避，语义不同）。
+    # MATURE 阶段降权（生产口径，系数见 config.CLASSIFY["mature_weight"]）：
+    # 成熟期主线的综合分乘以系数，让它在排名 / 入选阈值 / Top-K 与结算槽位竞争中
+    # 真实让位。只动 composite，不触碰 mainline 等阈值维度（那些决定「是否回避」，
+    # 语义不同）。stage 标注本身来自 scoring.compute_stage，是纯展示层数据。
     _mw = MATURE_WEIGHT
     if _mw != 1.0:
         for c in candidates:

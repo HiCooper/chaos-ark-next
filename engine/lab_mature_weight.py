@@ -9,18 +9,23 @@
 这里改的是**信号生成本身**——降权后的行业在排名、入选阈值、Top-K 名额、
 结算槽位竞争中全部真实让位，被挤掉的结论会由后面的候选补上。
 
-实现：classify.py 读环境变量 ARK_MATURE_W（默认 1.0 = 生产行为），
-在 classify_day 里对 stage==MATURE 的候选 composite 乘系数。
+实现：classify.py 的降权系数生产值取 config.CLASSIFY["mature_weight"]，
+环境变量 ARK_MATURE_W 可覆盖（本实验台用它逐档重放）。
 每个变体在独立 OUT_DIR 全量重放（--all，离线缓存），产出各自的
-review.json（含 settlement），对照组 w=1.0 必须与生产 nav 精确一致。
+review.json（含 settlement）。对照 W10（w=1.0）复现**落参前的旧行为**
+（2026-09-22 落参 0.7 之后，w=1.0 已不是生产口径，故基线列会与生产列不同）。
 
 变体：
-  W10  w=1.0  对照（复现校验）
-  W07  w=0.7  温和降权
-  W05  w=0.5  中度降权
-  W00  w=0.0  成熟期完全禁言（composite=0，必然跌出入选阈值）
+  W10   w=1.0   对照（落参前行为，复现校验）
+  W085  w=0.85  温和降权（候选；年化更高但回撤未改善，未采用）
+  W07   w=0.7   采用档（2026-09-22 落 config，bump ark-1.4.0-mature-weight）
+  W05   w=0.5   中度降权（与 0.7 结果完全相同）
+  W00   w=0.0   成熟期完全禁言（与 0.7 结果完全相同）
 
-运行：python lab_mature_weight.py   （4 次全量重放，约 20 分钟）
+注意：w<=0.7 三档结果逐字节相同（剂量响应存在悬崖），故最优剂量不可精调，
+只能把「是否降权」当二元决策。落参取 0.7 = 平台期内最接近旧行为的一档。
+
+运行：python lab_mature_weight.py   （5 次全量重放，约 25 分钟）
 """
 import json
 import os
