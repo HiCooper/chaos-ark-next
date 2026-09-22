@@ -22,6 +22,16 @@ from feature_store import FeatureStore  # noqa: E402
 
 DIMS = ["mainline", "pullback", "exhaust", "rebound", "risk", "regime_fit"]
 
+# ---- 实验台旋钮（默认值 = 生产口径）----
+# PB_GATE_BASE：主线强度闸门的下限。pullback = pullback_raw * ml_gate，
+#   ml_gate = PB_GATE_BASE + (1-PB_GATE_BASE) * mainline/100。
+#   生产 0.45（= 原硬编码 0.45 + 0.55*ml/100，逐字节一致）。调大即软化乘法挤压
+#   （2024 年该挤压让 pb>=52 的候选从 55.8/天 掉到 0.40/天，见 lab_gate2024）。
+PB_GATE_BASE = float(os.environ.get("ARK_PB_GATE_BASE", 0.45))
+# REGIME_ADJ=off：关闭环境权重调整（全部按 NEUTRAL 处理），用于检验
+#   「PANIC/DEFEND 下压低 mainline 权重」是否加剧了弱市哑火。
+REGIME_ADJ = os.environ.get("ARK_REGIME_ADJ", "on") != "off"
+
 
 def _norm(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """线性归一化到 0-100，NaN -> 50（中性）。"""
@@ -68,7 +78,7 @@ def compute_dimension_scores(fs: FeatureStore) -> Dict[str, np.ndarray]:
                     + 0.25 * _norm(ret250, -0.15, 0.80)
                     + 0.20 * _norm(dist120, -0.10, 0.30)
                     + 0.15 * _norm(dist250, -0.15, 0.40))
-        ml_gate = 0.45 + 0.55 * np.nan_to_num(mainline, nan=50.0) / 100.0   # 主线强度闸门
+        ml_gate = PB_GATE_BASE + (1.0 - PB_GATE_BASE) * np.nan_to_num(mainline, nan=50.0) / 100.0
 
         # ---- 2. pullback：短期回调深度（只有在主线里才成立）
         pullback_raw = (0.40 * _norm(-ret20, -0.20, 0.15)
@@ -128,7 +138,8 @@ def compute_regime_fit(fs: FeatureStore, regime_series: Dict[str, dict],
             f = 0.40 * ml + 0.30 * pb + 0.30 * rb
         fit[:, i] = f
 
-        w = C.REGIME_WEIGHT_ADJ.get(r, C.REGIME_WEIGHT_ADJ["NEUTRAL"])
+        w = C.REGIME_WEIGHT_ADJ.get(r, C.REGIME_WEIGHT_ADJ["NEUTRAL"]) if REGIME_ADJ \
+            else C.REGIME_WEIGHT_ADJ["NEUTRAL"]
         raw_w = {k: C.BASE_WEIGHTS[k] * w.get(k, 1.0) for k in C.BASE_WEIGHTS}
         tot = sum(raw_w.values())
         comp = (raw_w["mainline"] * np.nan_to_num(ml, nan=50.0)

@@ -35,6 +35,30 @@ ACTION_LABEL = {
 MATURE_WEIGHT = float(os.environ.get(
     "ARK_MATURE_W", C.CLASSIFY.get("mature_weight", 1.0)))
 
+# ---- 结论闸门旋钮（**默认值 = 生产口径，env 只作实验台覆盖入口**）----
+# 2026-09-22 诊断：2024 全年 233/242 个交易日零结论，硬约束是 AMBUSH 的
+# `pullback >= 52`。该维度在打分层被 ml_gate（0.45~1.0）乘法挤压——同一份
+# 截面若不乘 ml_gate 有 55.8 个/天达 52 分，乘完只剩 0.40 个（140 倍压制），
+# 于是「埋伏」只在「行业深崩 + 长期主线仍强」的极端组合下才成立。
+# 这些旋钮用于 lab_gate2024.py 逐档反事实，未确认前不进 config。
+_AB_ML_MIN = float(os.environ.get("ARK_AMBUSH_ML_MIN", 52))
+_AB_PB_MIN = float(os.environ.get("ARK_AMBUSH_PB_MIN", 52))
+_AB_EX_MIN = float(os.environ.get("ARK_AMBUSH_EX_MIN", 50))
+_BN_ML_MIN = float(os.environ.get("ARK_BUYNOW_ML_MIN", 58))
+_BN_RB_MIN = float(os.environ.get("ARK_BUYNOW_RB_MIN", 55))
+_BN_RK_MIN = float(os.environ.get("ARK_BUYNOW_RK_MIN", 35))
+# 自适应门槛：AMBUSH 的综合分门槛改为「当日候选截面分位」，并保留绝对下限
+_COMP_PCT = os.environ.get("ARK_COMP_PCT")
+_COMP_FLOOR = float(os.environ.get("ARK_COMP_FLOOR", 50))
+# 趋势延续型入场（默认关闭 = 生产口径）。现有两种入场语义**都要求回调**：
+#   AMBUSH 要 pullback>=52（回调充分），BUY_NOW 要 rebound>=55（跌后动能转强）。
+# 2024 的机会恰是「没有回调的持续趋势」（银行/非银/通信/芯片全年 +30~42%，
+# 全年不出现深调）——对这种行情系统在语义上无法出手。此旋钮增加第三条入场
+# 路径：长期主线够强 + 中短期动能同向为正（不看回调）。
+# 取值 = mainline 门槛（如 65）；None = 关闭。
+_MOMO_ML = os.environ.get("ARK_MOMO_ML")
+_MOMO_ML = float(_MOMO_ML) if _MOMO_ML else None
+
 
 def _f(x) -> Optional[float]:
     if x is None:
@@ -174,6 +198,13 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
     ml_vals = {c: row_of[c]["mainline"] for c in candidates}
     rk_vals = {c: row_of[c]["risk"] for c in candidates}
 
+    # AMBUSH 的综合分门槛：默认取生产的绝对阈值；实验台可用 ARK_COMP_PCT
+    # 换成「当日候选截面分位 + 绝对下限」的自适应门槛。
+    ambush_min = float(C.CLASSIFY["ambush_min"])
+    if _COMP_PCT:
+        _arr = np.array([row_of[c]["composite"] for c in candidates], dtype=float)
+        ambush_min = max(_COMP_FLOOR, float(np.percentile(_arr, float(_COMP_PCT))))
+
     picks, watch, avoid = [], [], []
     for c in sorted(candidates, key=lambda x: -row_of[x]["composite"]):
         d = row_of[c]
@@ -219,16 +250,25 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
             continue
 
         # ---------- 入手 / 埋伏 ----------
+        # 阈值取自模块级旋钮（默认=config，实验台可覆盖）；AMBUSH 的 exhau-st 语义
+        # 见 config.CLASSIFY 注释。用变量是为了让实验台能在同一份代码路径上做反事实。
         action = "WATCH"
         trigger = ""
-        if (d["composite"] >= C.CLASSIFY["buy_now_min"] and d["mainline"] >= 58
-                and d["rebound"] >= 55 and d["risk"] >= 35):
+        if (d["composite"] >= C.CLASSIFY["buy_now_min"] and d["mainline"] >= _BN_ML_MIN
+                and d["rebound"] >= _BN_RB_MIN and d["risk"] >= _BN_RK_MIN):
             action = "BUY_NOW"
             trigger = "长期主线成立 + 短期触底确认：主线趋势未破，回调后动能重新转强"
-        elif (d["composite"] >= C.CLASSIFY["ambush_min"] and d["mainline"] >= 52
-              and d["pullback"] >= 52 and d["exhaust"] >= 50):
+        elif (d["composite"] >= ambush_min and d["mainline"] >= _AB_ML_MIN
+              and d["pullback"] >= _AB_PB_MIN and d["exhaust"] >= _AB_EX_MIN):
             action = "AMBUSH"
             trigger = "主线行业回调中 + 抛压衰竭：长期趋势仍在，等待缩量企稳后的反弹"
+        elif (_MOMO_ML is not None and d["composite"] >= ambush_min
+              and d["mainline"] >= _MOMO_ML
+              and (_f(r["ret_20"]) or 0) > -0.02 and (_f(r["ret_60"]) or 0) > 0
+              and d["risk"] >= _BN_RK_MIN):
+            # 趋势延续型（实验旋钮，默认关闭）：不要求回调，要求中长期动能同向为正
+            action = "AMBUSH"
+            trigger = "长期主线强 + 中短期动能延续：趋势未破且未过热，顺势参与（不要求回调）"
 
         base["action"] = action
         base["trigger"] = trigger
