@@ -64,19 +64,43 @@ L4  cache/               实验台一次性产物                  可随时删�
 ## 重跑手册
 
 ```bash
-# 数据源主路径：申万官方 + 新浪（akshare，不依赖东财）
+# 推荐：统一入口（串起全部步骤 + 水位验收 + site 镜像）
+python3 engine/ark.py init          # clone 后一键初始化
+python3 engine/ark.py daily         # 收盘后更新（取数 + 增量重放 + 同步）
+python3 engine/ark.py status        # 水位报告（「更新到哪天了」的唯一口径）
+python3 engine/ark.py verify        # L0 sha256 + 特征层一致性
+
+# 手工分步（等价于 daily）
 cd engine && akshare-venv-python datasource_sw.py --refresh   # L0+L1 面板
-akshare-venv-python build_etf_panel.py                        # L1 ETF 面板
-venv-python pipeline.py --refresh --all                       # L2+L3 全量
+akshare-venv-python build_etf_panel.py --refresh              # L1 ETF 面板（--refresh 不能省）
+akshare-venv-python pipeline.py --refresh --all --tail 12     # L2+L3 增量
+python3 engine/ark.py sync                                    # web/public/data → site/data
 
 # 东财路径（限流解除后可作为备源）
 venv-python datasource.py --refresh                           # 写 data/raw/kline_em/
 # 备源切换说明：两种来源的指数代码命名空间不同（90.BKxxxx vs 801xxx），
 # 切换 = 换结论基线，需全量重跑并披露，不可混用两代面板。
 
-# L0 完整性校验
+# L0 完整性校验 / 修正某一天
 venv-python rawstore.py
+python3 engine/ark.py repair <YYYY-MM-DD> --yes               # write-once 的唯一例外
 ```
+
+## 可重放性的两个不变式（2026-09-22 实证确立）
+
+增量重放（`--tail N`，只重算尾部、历史日复用 `day/<date>.json`）成立的前提是
+「追加新交易日不改变历史结论」。为此有两条硬约定，改动对应模块时必须复查：
+
+1. **特征以 float64 落盘**（`feature_store.save`）。存 float32 会让「读缓存重放」
+   与「现算重放」精度基线不一致——实测 2605 个 day 文件全部出现第 5 位小数级差异。
+2. **特征窗口起点锚定**在 `cache/features.fp.json` 的 `window_start`（当前
+   2012-09-07）。用尾部滑动窗口（`last_n`）时每追加一天起点就前移一天，等权指数
+   等递推量的浮点末位会漂移。
+
+运行时由 **canary 自检**兜底：`--tail N` 的尾部重算日若与上次落盘结论逐字节不一致，
+立即放弃缓存、回退全量重放并大声告警。因此上述约定一旦被破坏，系统不会静默出错，
+只会变慢（退化为全量）。实证记录：修复后 day 文件与基线 2605/2605 逐字节一致，
+快速增量路径整条管线 CPU ≈ 56s。
 
 ## 稳定性与扩展性约定
 

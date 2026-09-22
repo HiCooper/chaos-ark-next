@@ -1,0 +1,6 @@
+# 混沌方舟 ARK 引擎依赖（python >= 3.11）
+# 安装：python3 -m venv .venv && .venv/bin/pip install -r engine/requirements.txt
+# 或直接：python3 engine/ark.py init   （自动建 venv + 装依赖 + 全量初始化数据）
+numpy>=2.0
+pandas>=2.2
+akshare>=1.18

@@ -78,10 +78,13 @@ class FeatureStore:
         return out
 
     def save(self, path: str):
+        # 必须存 float64：内存里算特征用的是 float64，若存 float32，则「读缓存重放」
+        # 与「现算重放」的精度基线不一致，同一天会得出第 5 位小数不同的结论
+        # （实测 2605 个 day 文件全部受影响）。结论要求逐字可重放，精度不能丢。
         payload = {}
         for c in self.codes:
             for f in FIELDS:
-                payload[f"{c}|{f}"] = self.data[c][f].astype(np.float32)
+                payload[f"{c}|{f}"] = np.asarray(self.data[c][f], dtype=np.float64)
         np.savez_compressed(path, **payload)
         with open(path + ".meta.json", "w", encoding="utf-8") as fh:
             json.dump({"dates": self.dates, "codes": self.codes,
@@ -120,10 +123,20 @@ def _align(panel: dict, code: str, dates: List[str]) -> List[dict]:
     return out
 
 
-def build(panel: dict, last_n: Optional[int] = None, verbose: bool = True) -> FeatureStore:
-    """从面板构建特征库。last_n 限制只算最近 N 个交易日（省内存/提速）。"""
+def build(panel: dict, last_n: Optional[int] = None, verbose: bool = True,
+          start: Optional[str] = None) -> FeatureStore:
+    """从面板构建特征库。
+
+    dates 取值二选一：
+      start="YYYY-MM-DD"  锚定窗口起点（推荐）：起点不随后续追加新交易日漂移，
+                          历史 row 的特征逐字节稳定 —— 这是「增量重放」成立的前提。
+      last_n=N            尾部 N 天（旧行为）：每追加一天窗口起点就前移一天，
+                          等权指数等递推量的浮点末位会变，破坏逐字可重放。
+    """
     dates = panel["dates"]
-    if last_n:
+    if start:
+        dates = [d for d in dates if d >= start]
+    elif last_n:
         dates = dates[-last_n:]
     codes = [c for c in panel["series"].keys()]
 

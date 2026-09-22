@@ -7,8 +7,15 @@
     python pipeline.py --backfill 400     # 重放最近 400 个交易日，产出历史结论库
     python pipeline.py --as-of 2026-09-21 # 只跑一天
     python pipeline.py --all              # backfill + today + review 全量刷新
+    python pipeline.py --all --tail 12    # 增量：只重算尾部 12 天，历史日复用 day/<date>.json
 
 不变式：同一份 panel + 同一份 config => 同一份结论（逐字可重放）。
+
+增量重放的前提（已逐一验证，改动对应模块时必须复查）：
+    indicators / feature_store / regime / scoring / horizon 全部只向后看
+    （rolling / pct_change / 递推 EMA / 滞回 / state[:i-max(H)-1] 历史类比），
+    因此「追加新交易日」不会改变历史上任何一天的结论。
+    运行时用 canary 自检兜底：尾部重算日若与上一次落盘结论不一致，自动回退全量。
 """
 from __future__ import annotations
 
@@ -17,7 +24,7 @@ import json
 import os
 import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -41,6 +48,26 @@ def config_hash() -> str:
     return hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]
 
 
+FP_PATH = lambda: f"{C.CACHE_DIR}/features.fp.json"  # noqa: E731
+
+
+def panel_fingerprint(panel: dict) -> str:
+    """面板指纹：日期轴长度 + 尾部 5 日 + 标的集合 + 各标的最新一根 bar。
+
+    用途：检测 features.npz 是否由「另一份 panel」算出（典型场景：panel 已追加了
+    新交易日，但忘了 --refresh，特征里根本没有新的一天 → 静默产出与昨天相同的结论）。
+    只取尾部而不取全量，是为了让指纹对「历史段不变 + 追加新日」敏感、对无关重排不敏感。
+    """
+    dates = panel["dates"]
+    tail: Dict[str, list] = {}
+    for c, s in panel["series"].items():
+        r = s.get(dates[-1]) or {}
+        tail[c] = [r.get("close"), r.get("amount")]
+    payload = {"n": len(dates), "last5": dates[-5:],
+               "codes": sorted(panel["series"].keys()), "tail": tail}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def load_etf_book() -> Optional[ST.EtfBook]:
     """加载 ETF 账簿（真实结算用）。缺失时返回 None，收益退化为信号口径。"""
     path = f"{C.CACHE_DIR}/etf_panel.json"
@@ -51,12 +78,47 @@ def load_etf_book() -> Optional[ST.EtfBook]:
 
 
 def load_context(refresh: bool = False, last_n: int = 3400) -> dict:
-    """加载（必要时重建）特征库 / 环境序列 / 打分矩阵 / 前瞻收益。"""
+    """加载（必要时重建）特征库 / 环境序列 / 打分矩阵 / 前瞻收益。
+
+    两个守卫：
+      1. 陈旧守卫：cache 里有 features.npz 但它是由「另一份 panel」算出的
+         （面板指纹不符）→ 视为陈旧，自动重建并大声说明。
+      2. 窗口锚定：特征窗口起点一旦确定就冻结在 features.fp.json 里，
+         不随追加新交易日漂移 —— 这是「历史结论逐字节稳定」的前提。
+    """
     fs_path = f"{C.CACHE_DIR}/features.npz"
+    fp_info = None
+    if os.path.exists(FP_PATH()):
+        try:
+            fp_info = json.load(open(FP_PATH()))
+        except Exception:
+            fp_info = None
+    anchor = (fp_info or {}).get("window_start")
+
+    fp = None
+    if not refresh and os.path.exists(fs_path):
+        panel_now = DS.load_panel()
+        fp = panel_fingerprint(panel_now)
+        old_fp = (fp_info or {}).get("panel_fp")
+        if old_fp and old_fp != fp:
+            print(f"[guard] features.npz 与当前 panel 不一致 "
+                  f"(特征指纹 {old_fp} != 面板指纹 {fp}) → 自动重建特征层")
+            refresh = True
     if refresh or not os.path.exists(fs_path):
         panel = DS.load_panel()
-        fs = build_fs(panel, last_n=last_n)
+        # 窗口起点：优先沿用上次的锚点；首次构建时取尾部 last_n 天的起点并冻结
+        if not anchor:
+            anchor = panel["dates"][-last_n] if len(panel["dates"]) > last_n \
+                else panel["dates"][0]
+        print(f"      特征窗口锚定起点: {anchor}")
+        fs = build_fs(panel, start=anchor)
         fs.save(fs_path)
+        fp = panel_fingerprint(panel)
+        os.makedirs(C.CACHE_DIR, exist_ok=True)
+        json.dump({"panel_fp": fp, "window_start": anchor,
+                   "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "engine_version": ENGINE_VERSION, "config_hash": config_hash()},
+                  open(FP_PATH(), "w"))
     else:
         fs = FeatureStore.load(fs_path)
 
@@ -116,6 +178,91 @@ def run_range(ctx: dict, dates: List[str], verbose: bool = True,
     return out
 
 
+def _load_cached_conclusion(date: str) -> Optional[dict]:
+    """读回 day/<date>.json 里的结论（剥掉 action_today 等附加层）。
+
+    day_payload = conclusions + action_today，且 run_day 已写入 engine_version /
+    config_hash，天然是一份带版本标记的结论缓存。仅当版本与口径都一致时才可信。
+    """
+    p = f"{C.OUT_DIR}/day/{date}.json"
+    if not os.path.exists(p):
+        return None
+    try:
+        day = json.load(open(p))
+    except Exception:
+        return None
+    if day.get("engine_version") != ENGINE_VERSION or day.get("config_hash") != config_hash():
+        return None
+    day.pop("action_today", None)
+    day.pop("_offline", None)
+    return day if day.get("date") == date else None
+
+
+def run_range_incremental(ctx: dict, dates: List[str], tail_n: int,
+                          verbose: bool = True,
+                          book: Optional[ST.EtfBook] = None
+                          ) -> Tuple[Dict[str, dict], Dict[str, dict], int]:
+    """增量重放：只重算尾部 tail_n 天，其余日期复用已落盘的结论。
+
+    返回 (conclusions, cached_exits, n_reused)：
+      conclusions  全部日期的结论（复用 + 新算）
+      cached_exits 命中缓存的日期 -> 该日已落盘的 action_today（免重算 open_positions）
+      n_reused     复用的天数
+
+    canary 自检：尾部重算日若上一次也有落盘结论，则逐字段比对；任何不一致都说明
+    「追加新交易日不改变历史结论」这个前提被打破（改了某个模块的前视口径、或 L0
+    被回填修订），此时放弃缓存、整体回退全量重放。
+    """
+    day_dir = f"{C.OUT_DIR}/day"
+    tail = set(dates[-tail_n:]) if tail_n > 0 else set()
+    out: Dict[str, dict] = {}
+    cached_exits: Dict[str, dict] = {}
+    n_reused = 0
+    t0 = time.time()
+    for i, d in enumerate(dates):
+        cached = None
+        at = None
+        if d not in tail:
+            p = f"{day_dir}/{d}.json"
+            if os.path.exists(p):
+                try:
+                    raw = json.load(open(p))
+                except Exception:
+                    raw = None
+                if (raw and raw.get("date") == d
+                        and raw.get("engine_version") == ENGINE_VERSION
+                        and raw.get("config_hash") == config_hash()):
+                    at = raw.get("action_today")
+                    raw.pop("action_today", None)
+                    raw.pop("_offline", None)
+                    cached = raw
+        if cached is not None:
+            out[d] = cached
+            if at:
+                cached_exits[d] = at
+            n_reused += 1
+            continue
+        out[d] = run_day(ctx, d, book=book)
+        if verbose and (i + 1) % 20 == 0:
+            print(f"  增量重放进度 {i+1}/{len(dates)}  ({time.time()-t0:.0f}s)")
+
+    # ---- canary：尾部重算日 vs 上一次落盘结论
+    bad = []
+    for d in sorted(tail):
+        cached = _load_cached_conclusion(d)
+        if cached is None:
+            continue
+        if json.dumps(cached, sort_keys=True) != json.dumps(out[d], sort_keys=True):
+            bad.append(d)
+    if bad:
+        print(f"[canary] {len(bad)} 个尾部重算日与历史落盘结论不一致（如 {bad[:3]}）")
+        print("         「历史结论不随新交易日改变」的前提被打破 → 回退全量重放")
+        out = run_range(ctx, dates, verbose=verbose, book=book)
+        cached_exits = {}
+        n_reused = 0
+    return out, cached_exits, n_reused
+
+
 def build_action_today(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
                        dates: List[str]) -> Optional[dict]:
     """「今日出手」——重建截至最新交易日仍在场的持仓，挑出命中交易规则要出手的标的。
@@ -149,7 +296,8 @@ def build_action_today(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
 
 
 def build_hist_exits(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
-                     dates: List[str]) -> Dict[str, dict]:
+                     dates: List[str], cached_exits: Optional[Dict[str, dict]] = None
+                     ) -> Dict[str, dict]:
     """为每个交易日重建「当日出手判断」，供历史日历详情展示。
 
     与 build_action_today 同源：复用 settlement.open_positions，逐日把 as_of 指到
@@ -158,12 +306,13 @@ def build_hist_exits(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
     open/sell_today/sell_soon/warn/...），前端历史日详情直接复用今日页的
     出手判断组件，无需为历史日另写一套渲染。
 
-    逐日文件独立落盘（day/<date>.json），体积不进入首屏 history.json。
-    复杂度 O(n²)，但 open_positions 每次只做轻量 dict 重放，2605 天量级可接受
-    （全量管线本身已需重放 2605 天，此步骤为纯增量）。
+    cached_exits：增量模式下，命中结论缓存的日期直接复用已落盘的 action_today
+    （open_positions 单次 0.04s × 2598 天 ≈ 113s，是增量路径最大的一块固定开销）。
+    复杂度 O(n²)，但 open_positions 每次只做轻量 dict 重放，2605 天量级可接受。
     """
     if book is None:
         return {}
+    cached_exits = cached_exits or {}
     # 建一次 signal 列表（复用 build_action_today 的字段口径），逐日只换 as_of
     signals: List[dict] = []
     for d in dates:
@@ -183,6 +332,9 @@ def build_hist_exits(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
 
     out: Dict[str, dict] = {}
     for d in dates:
+        if d in cached_exits and cached_exits[d].get("as_of") == d:
+            out[d] = cached_exits[d]
+            continue
         at = ST.open_positions(book, signals, d,
                                max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                                soon_days=10)
@@ -252,6 +404,11 @@ def main():
     elif do_all:
         backfill = 0
     as_of = args[args.index("--as-of") + 1] if "--as-of" in args else None
+    # --tail N：增量模式。只重算尾部 N 天（含 canary 重叠自检），历史日复用
+    # day/<date>.json 里的结论与 action_today。N=0 表示「只算最新一天」。
+    tail_n = None
+    if "--tail" in args:
+        tail_n = max(0, int(args[args.index("--tail") + 1]))
 
     os.makedirs(C.OUT_DIR, exist_ok=True)
     print("[1/6] 载入上下文 ...")
@@ -280,11 +437,20 @@ def main():
         if bi is not None:
             start_i = max(start_i, bi)
     dates = fs.dates[start_i:]
-    print(f"[2/6] 重放 {len(dates)} 个交易日 ({dates[0]} -> {dates[-1]}) ...")
-    conclusions = run_range(ctx, dates, book=book)
+    if tail_n is not None:
+        print(f"[2/6] 增量重放：尾部 {tail_n} 天重算，"
+              f"其余 {max(0, len(dates) - tail_n)} 天复用缓存 "
+              f"({dates[0]} -> {dates[-1]}) ...")
+        conclusions, cached_exits, n_reused = run_range_incremental(
+            ctx, dates, tail_n, book=book)
+    else:
+        print(f"[2/6] 重放 {len(dates)} 个交易日 ({dates[0]} -> {dates[-1]}) ...")
+        conclusions = run_range(ctx, dates, book=book)
+        cached_exits, n_reused = {}, 0
 
     print("[3/6] 逐日重建出手判断 ...")
-    exits_by_date = build_hist_exits(book, conclusions, dates)
+    exits_by_date = build_hist_exits(book, conclusions, dates,
+                                     cached_exits=cached_exits)
     n_exit_days = sum(1 for e in exits_by_date.values() if e["n_open"] > 0)
 
     print("      落盘历史索引 + 逐日完整研判 ...")
@@ -298,10 +464,14 @@ def main():
 
     day_dir = f"{C.OUT_DIR}/day"
     os.makedirs(day_dir, exist_ok=True)
-    for d in dates:
+    # 增量模式只重写重算过的日期：缓存命中的日期其结论与出手判断都与盘上
+    # 逐字节相同，重写是纯 IO 浪费（2598 个文件 ≈ 数十秒）。
+    write_dates = dates[-tail_n:] if tail_n is not None else dates
+    for d in write_dates:
         json.dump(day_payload(conclusions[d], exits_by_date.get(d)),
                   open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
-    print(f"      day/<date>.json × {len(dates)}（其中 {n_exit_days} 日有在场持仓）")
+    print(f"      day/<date>.json：重写 {len(write_dates)} / 共 {len(dates)}"
+          f"（复用 {n_reused} 天缓存，其中 {n_exit_days} 日有在场持仓）")
 
     print("[4/6] 落盘今日结论 ...")
     today = conclusions[dates[-1]]

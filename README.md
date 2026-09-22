@@ -28,16 +28,49 @@ engine/          Python 引擎（策略核心，无第三方重依赖，numpy �
   lab_*.py         实验台：反事实扫描（先精确复现基线才允许下结论）
 
 web/             React + Vite 前端（纯静态）
-  src/App.tsx      四个标签页：今日结论 / 历史日历 / 复盘 / 引擎
+  src/App.tsx      四个标签页：今日结论 / 复盘 / 引擎 / 实验
   src/HistoryStrip.tsx   历史结论热力图（交易日历）
   src/chart.tsx    ECharts 净值曲线（缩放 + 每日结论带 + B/S 标记）
-  public/data/     引擎产出的三份 JSON（history / today / review）
+  public/data/     引擎产出的 JSON（history / today / review / experiments / day/）
 
-site/            部署产物（web/dist 的同步副本，可直接静态托管）
+site/            部署产物（web/dist 同步 + data 镜像，可直接静态托管）
+engine/ark.py    统一入口（init / daily / status / verify / sync / repair）
 report/          研究报告与截图
 ```
 
 ## 运行
+
+### 一键初始化（clone 之后）
+
+```bash
+python3 engine/ark.py init
+```
+
+自动完成：建 `.venv` → 装 `engine/requirements.txt` → 全量抓取 L0/L1（约 7 分钟）→
+全量管线（L2+L3）→ 同步 `site/data/`。结束后 `engine/ark.py status` 应显示各层
+水位同日。
+
+### 日常更新（收盘后）
+
+```bash
+python3 engine/ark.py daily          # 取数 + 增量重放（尾部 12 天）+ 同步 + 水位验收
+python3 engine/ark.py daily --full   # 改过引擎口径/config 后用这个（全量重放）
+python3 engine/ark.py status         # 只读水位报告（「更新到哪天了」的唯一口径）
+python3 engine/ark.py verify         # L0 sha256 校验 + 特征层一致性
+```
+
+要点：
+
+- **`pipeline.py` 自身不触网**，只读 `cache/panel.json`。取数由
+  `datasource_sw.py --refresh`（申万指数+基准）与 `build_etf_panel.py --refresh`
+  （ETF）完成——两者都**必须带 `--refresh`**，否则静默吃 L0 缓存，新交易日永远不落盘。
+  `ark.py daily` 已把这些步骤与参数固化。
+- **增量重放的前提**是「历史结论不随新交易日改变」。引擎全链
+  （indicators/feature_store/regime/scoring/horizon）只向后看，且特征窗口起点
+  锚定在 `cache/features.fp.json`、特征以 float64 落盘；运行时用 canary 自检
+  （尾部重算日与上次落盘结论逐字节比对），不一致自动回退全量重放。
+- 改了 `config.py` 或任何引擎模块后，`day/<date>.json` 缓存里的 `config_hash` /
+  `engine_version` 不匹配会自动失效，等价于全量重放；`daily --full` 可强制。
 
 ### 前端（不跑引擎，先看现有数据）
 
@@ -48,19 +81,20 @@ npm run dev        # 开发：http://localhost:5173
 npm run build      # 产物在 web/dist/
 ```
 
-### 引擎（全量重算）
+### 手工分步（等价于 ark.py daily）
 
 ```bash
-# 依赖：python3 + numpy（无其他重依赖；数据经东财公开接口抓取）
 cd engine
-python3 pipeline.py --backfill 400    # 重放最近 400 个交易日
-python3 pipeline.py --all             # 全量刷新（backfill + today + review）
+python datasource_sw.py --refresh        # L0+L1 行业面板
+python build_etf_panel.py --refresh      # L1 ETF 面板
+python pipeline.py --refresh --all --tail 12   # L2+L3
+cd .. && python3 engine/ark.py sync      # web/public/data → site/data
 ```
 
-产出 `web/public/data/{history,today,review}.json`，前端直接消费。
+### 产出
 
-> 注意：`engine/config.py` 的 `ROOT` 默认指向仓库根目录的上一级推断，
-> 首次在新机器运行需要按注释改成本机路径；`cache/` 会被自动重建（约 137MB）。
+`web/public/data/{history,today,review,experiments}.json` + `day/<date>.json`，
+前端直接消费；`site/data/` 是部署副本（`ark.py sync` 镜像）。
 
 ## 关键规则速览（详见引擎页「规则参数」面板，与 config.py 同源）
 
