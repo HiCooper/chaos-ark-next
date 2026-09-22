@@ -157,3 +157,73 @@ def rank_pct_of(matrix: np.ndarray, axis: int = 0) -> np.ndarray:
     n = matrix.shape[axis]
     out = np.argsort(np.argsort(np.nan_to_num(matrix, nan=-1e9), axis=axis), axis=axis) / max(n - 1, 1)
     return out
+
+
+# ==================== 行业周期阶段（展示层标注，不进评分） ====================
+
+def _roll_pct(arr: np.ndarray, win: int, min_obs: int = 60) -> np.ndarray:
+    """当前值在过去 win 日窗口（含当日）内的分位（0~1）；样本不足或 nan 传播。"""
+    n = len(arr)
+    out = np.full(n, np.nan)
+    for i in range(n):
+        v = arr[i]
+        if np.isnan(v):
+            continue
+        w = arr[max(0, i - win + 1): i + 1]
+        w = w[~np.isnan(w)]
+        if len(w) < min_obs:
+            continue
+        out[i] = float(np.mean(w <= v))
+    return out
+
+
+def _roll_share_pos(arr: np.ndarray, win: int, min_obs: int = 40) -> np.ndarray:
+    """过去 win 日窗口内 arr > 0 的占比（趋势年龄代理）。"""
+    n = len(arr)
+    pos = np.where(np.isnan(arr), np.nan, (arr > 0).astype(float))
+    out = np.full(n, np.nan)
+    for i in range(n):
+        w = pos[max(0, i - win + 1): i + 1]
+        w = w[~np.isnan(w)]
+        if len(w) < min_obs:
+            continue
+        out[i] = float(np.mean(w))
+    return out
+
+
+def compute_stage(fs: FeatureStore) -> Dict[str, np.ndarray]:
+    """行业周期阶段：SPROUT 萌发 / CONFIRM 确认 / MID 中期 / MATURE 成熟。
+
+    展示层标注：不进 composite、不改变 picks/avoid/watch 的任何路径。
+    阈值全部取各行业自身历史分位（避免绝对参数），规则保持最简，先观察再迭代：
+      MATURE  成熟期：价格对年线偏离处于自身 1 年来 top 15%（过热预警）
+      MID     中期  ：年线上方、趋势年龄较长（近 60 日多数时间在年线上方）
+      CONFIRM 确认期：站上年线不久（近 60 日多数时间仍在年线下方）
+      SPROUT  萌发期：仍在年线下方 + ret5 转正 + 量能处于自身低位（抛压衰竭）
+    样本不足或长期弱势无信号时为 ""（前端显示 —）。
+    """
+    out: Dict[str, np.ndarray] = {}
+    for ci, code in enumerate(fs.codes):
+        d120 = fs.series(code, "dist_ma120")
+        d250 = fs.series(code, "dist_ma250")
+        ret5 = fs.series(code, "ret_5")
+        volr = fs.series(code, "vol_ratio")
+        heat = _roll_pct(d250, 250)
+        volq = _roll_pct(volr, 250)
+        above = _roll_share_pos(d120, 60)
+        n = len(fs.dates)
+        stage = np.full(n, "", dtype=object)
+        for i in range(n):
+            if np.isnan(d120[i]):
+                continue
+            if d120[i] <= 0:
+                if (not np.isnan(ret5[i]) and ret5[i] > 0
+                        and not np.isnan(volq[i]) and volq[i] <= 0.35):
+                    stage[i] = "SPROUT"
+                continue
+            if not np.isnan(heat[i]) and heat[i] >= 0.85:
+                stage[i] = "MATURE"
+            elif not np.isnan(above[i]):
+                stage[i] = "CONFIRM" if above[i] < 0.5 else "MID"
+        out[code] = stage
+    return out

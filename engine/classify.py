@@ -117,8 +117,9 @@ def build_invalidation(fs: FeatureStore, code: str, date: str, action: str) -> L
 
 def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray,
                  regime_series: Dict[str, dict], state: np.ndarray, fwd: dict,
-                 date: str, verbose: bool = False) -> dict:
-    """生成单日完整结论。"""
+                 date: str, verbose: bool = False,
+                 stages: Optional[Dict[str, np.ndarray]] = None) -> dict:
+    """生成单日完整结论。stages 为行业周期阶段标注（仅展示，不影响结论）。"""
     i = fs.idx(date)
     info = regime_series.get(date)
     if not info:
@@ -143,6 +144,15 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
             "composite": float(comp[ci, i]),
         }
 
+    # 行业周期阶段（展示层标注，来自 scoring.compute_stage，缺失为 ""）
+    def _stage(c: str) -> str:
+        if stages is None or c not in stages:
+            return ""
+        arr = stages[c]
+        return str(arr[i]) if 0 <= i < len(arr) else ""
+
+    stage_of = {c: _stage(c) for c in candidates}
+
     # 主线 / 风险 的横截面分位（用于阈值与归因）
     ml_vals = {c: row_of[c]["mainline"] for c in candidates}
     rk_vals = {c: row_of[c]["risk"] for c in candidates}
@@ -154,6 +164,7 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
         base = {
             "code": c, "name": fs.meta[c]["name"], "level": fs.meta[c]["level"],
             "composite": round(d["composite"], 2),
+            "stage": stage_of[c],
             "dims": {k: round(v, 1) for k, v in d.items() if k != "composite"},
             "metrics": {
                 "ret_5": _f(r["ret_5"]), "ret_20": _f(r["ret_20"]), "ret_60": _f(r["ret_60"]),
@@ -266,6 +277,37 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
     for a in (demoted + avoid)[:6]:
         a["horizon"] = None
 
+    # ---------- 行业全景表（ranking） ----------
+    # 全部候选行业按综合分排序的紧凑视图，每行带 60/80/100 三个持有周期下
+    # 「历史相似样本」的前瞻统计（超额收益/胜率/平均回撤），供页面全景表与调仓对比。
+    # 不改变任何结论逻辑：picks/avoid/watch 的生成路径原样保留，这里只做导出。
+    # 回避类不再重复估周期（无意义——结论已否决），action 原样标出。
+    ranking: List[dict] = []
+    for c in sorted(candidates, key=lambda x: -row_of[x]["composite"]):
+        act = next(
+            (p["action"] for p in final if p["code"] == c),
+            next((a["action"] for a in (demoted + avoid) if a["code"] == c), "WATCH"),
+        )
+        row = {
+            "code": c, "name": fs.meta[c]["name"], "level": fs.meta[c]["level"],
+            "composite": round(row_of[c]["composite"], 2), "action": act,
+            "stage": stage_of[c],
+        }
+        if act in ("BUY_NOW", "AMBUSH"):
+            # 最终结论已估过周期，直接复用，保证与结论卡同源
+            p = next(p for p in final if p["code"] == c)
+            hz = p.get("horizon") or {}
+            if hz.get("stats"):
+                row["hz"] = _compact_hz(hz["stats"])
+                row["hz_picked"] = hz.get("horizon")
+        elif act != "AVOID":
+            ci2 = codes.index(c)
+            hz2 = estimate_horizon(fs, dims, regime_series, fwd, c, date, state[ci2])
+            if hz2.get("stats"):
+                row["hz"] = _compact_hz(hz2["stats"])
+                row["hz_picked"] = hz2.get("horizon")
+        ranking.append(row)
+
     return {
         "date": date,
         "regime": regime,
@@ -278,6 +320,7 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
         },
         "universe_size": len(candidates),
         "picks": final,
+        "ranking": ranking,
         "n_filtered_conclusions": len(demoted),
         "avoid": (demoted + avoid)[:6],
         "watch_top": [
@@ -285,6 +328,19 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
              "composite": w["composite"]} for w in watch[:6]
         ],
     }
+
+
+def _compact_hz(stats: dict) -> dict:
+    """把 horizon.stats 压成 60/80/100 -> {excess, win, dd} 的紧凑结构（省盘面）。"""
+    out = {}
+    for H, s in (stats or {}).items():
+        if s.get("insufficient"):
+            continue
+        out[str(H)] = {
+            "excess": s.get("mean_excess"), "win": s.get("win_rate"),
+            "dd": s.get("mean_maxdd"),
+        }
+    return out
 
 
 def summarize(day: dict) -> str:

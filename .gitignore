@@ -13,3 +13,9 @@ web/tsconfig.tsbuildinfo
 
 # 数据缓存：行情原始数据（137MB，可由 engine 全量重建，不入库）
 cache/
+
+# L0 一手数据快照（89MB，可由 engine/datasource_sw.py 重新抓取，不入库）
+data/
+
+# WorkBuddy 会话数据（记忆/自动化，不入库）
+.workbuddy/

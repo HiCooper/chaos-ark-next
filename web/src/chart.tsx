@@ -25,7 +25,22 @@ const GRID_TOP = 30
 const GRID_H = 208
 const STRIP_TOP = 296
 const STRIP_H = 14
-const DENSE_DAYS = 240 // 视窗内超过这么多交易日就把 B/S 收成小圆点（放大后才显字母）
+// 字母徽标（B/S）可容纳的单方向标记数上限：超过此数，字母互相重叠，收成小圆点。
+// B 与 S 分别画在净值线下方/上方，是两个独立系列，拥挤度按单方向最多的一侧算——
+// 2025 年全年 B 49 个 / S 53 个，字母间距约 21px，完全放得下。
+// 之前按「交易日数」判 dense 是错的——单年约 243 个交易日但只有几十个成交点，
+// 字母放得下，却被误判成圆点。
+const DENSE_MARKERS = 80
+
+/** 单方向最大标记数：窗口内 B、S 各自的点数取较大者 */
+function maxSideMarkers(markers: Marker[], i0: number, i1: number): number {
+  let b = 0, s = 0
+  for (const m of markers) {
+    if (m.i < i0 || m.i > i1) continue
+    if (m.k === 'B') b++; else s++
+  }
+  return Math.max(b, s)
+}
 
 // 「每日结论」色带：非成交事件，而是当天系统给出的结论档位
 const STRIP_COLORS: Record<number, string> = {
@@ -57,8 +72,8 @@ export type NavChartProps = {
   maxHoldings: number
   /** 与 dates 等长：每天的历史结论（无结论日为 null） */
   conclusions: ConclDay[]
-  /** 买卖点悬浮明细（按曲线索引） */
-  markerTip: (i: number) => Marker | undefined
+  /** 买卖点悬浮明细（按曲线索引）：同一天可能同时有 B 和 S 两个标记，按数组返回 */
+  markerTip: (i: number) => Marker[]
   /** 结论悬浮明细：返回 HTML 片段（成交明细部分） */
   tradeTip: (i: number) => string
 }
@@ -179,8 +194,8 @@ export function NavChart(props: NavChartProps) {
   const option = useMemo(() => {
     if (n < 2) return null
     const fit = navFit(nav, bench, 0, n - 1)
-    // 与 refit() 用同一条密度判定，避免两处口径不一致
-    const dense = n > DENSE_DAYS
+    // 与 refit() 用同一条密度判定（按单方向标记数），避免两处口径不一致
+    const dense = maxSideMarkers(markers, 0, n - 1) > DENSE_MARKERS
 
     const series: any[] = [
       {
@@ -264,7 +279,7 @@ export function NavChart(props: NavChartProps) {
           if (i === undefined) return ''
           const c = conclusions[i] || null
           const inv = hasAux ? invested[i] : null
-          const day = markerTip(i)
+          const dayMks = markerTip(i)
           const kv = [
             `<div class="ek-kv"><span>组合（自区间起点）</span><b>${((nav[i] - 1) * 100).toFixed(2)}%</b></div>`,
             `<div class="ek-kv"><span>${props.benchName || '基准'}</span><b>${((bench[i] - 1) * 100).toFixed(2)}%</b></div>`,
@@ -274,7 +289,7 @@ export function NavChart(props: NavChartProps) {
               : '',
           ].join('')
           return `<div class="ektip">
-            <div class="ek-h">${date} · ${c ? (REGIME_TXT[c.regime] || c.regime) : '—'}${day ? ' · 成交日' : ''}</div>
+            <div class="ek-h">${date} · ${c ? (REGIME_TXT[c.regime] || c.regime) : '—'}${dayMks.length ? ' · 成交日' : ''}</div>
             ${kv}
             ${conclHtml(c)}
             ${props.tradeTip(i)}
@@ -366,7 +381,9 @@ export function NavChart(props: NavChartProps) {
       const i1 = Math.min(cnt - 1, Math.max(i0, Math.round((en / 100) * (cnt - 1))))
       setWin((prev) => (prev && prev.a === p.dates[i0] && prev.b === p.dates[i1]
         ? prev : { a: p.dates[i0], b: p.dates[i1], n: i1 - i0 + 1 }))
-      const dense = i1 - i0 + 1 > DENSE_DAYS
+      // 密度按「窗口内单方向最大标记数」判，不按交易日数：单年虽有两百多个交易日，
+      // 但 B/S 各方向只有几十个点，字母徽标放得下。
+      const dense = maxSideMarkers(p.markers, i0, i1) > DENSE_MARKERS
       const fit = navFit(p.nav, p.bench, i0, i1)
       // 只回写 min/max（按索引合并到 yAxis[0]），不要把 getOption() 的规范化对象整个铺回去，
       // 那个对象里含着 ECharts 内部字段，回写容易踩坑。

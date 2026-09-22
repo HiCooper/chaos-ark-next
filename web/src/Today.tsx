@@ -24,6 +24,20 @@ function dimColor(v: number) {
   return '#9aa3b2'
 }
 
+const HZ_KEYS = ['60', '80', '100'] as const
+
+/** 相似样本前瞻统计统一读法：兼容完整 stats（mean_excess/win_rate/mean_maxdd）与紧凑 hz（excess/win/dd） */
+function hzCell(s: any) {
+  if (!s) return null
+  return {
+    excess: s.excess !== undefined ? s.excess : s.mean_excess,
+    win: s.win !== undefined ? s.win : s.win_rate,
+    dd: s.dd !== undefined ? s.dd : s.mean_maxdd,
+    samples: s.samples,
+    insufficient: s.insufficient,
+  }
+}
+
 function PickCard({ p }: { p: any }) {
   const [open, setOpen] = useState(false)
   const buy = p.action === 'BUY_NOW'
@@ -36,6 +50,7 @@ function PickCard({ p }: { p: any }) {
         <span className="pick-name">{p.name}</span>
         <Chip>{p.level === 'L1' ? '一级行业' : '细分赛道'}</Chip>
         <Chip tone={buy ? 'up' : 'ambush'}>{buy ? '入手' : '埋伏'}</Chip>
+        {p.stage && <Chip tone="dim">阶段 · {STAGE_TXT[p.stage] || p.stage}</Chip>}
         {hz.low_confidence && <Chip tone="warn">样本偏少</Chip>}
         <div className="pick-score">
           <div className="v num">{num(p.composite, 1)}</div>
@@ -85,6 +100,36 @@ function PickCard({ p }: { p: any }) {
           </div>
         )}
       </div>
+
+      {/* 深入：不同持有周期下的相似样本预测（60/80/100 择优的依据摊开看） */}
+      {hz.stats && HZ_KEYS.some((H) => hzCell(hz.stats[H])) && (
+        <div className="hz-deep">
+          <div className="hzd-title">
+            持有周期敏感性 · 相似样本实测（超额相对行业等权，★ 为建议周期）
+          </div>
+          <table className="hzd-table">
+            <thead>
+              <tr><th>持有周期</th><th>预测超额</th><th>胜率</th><th>平均回撤</th><th>样本</th></tr>
+            </thead>
+            <tbody>
+              {HZ_KEYS.map((H) => {
+                const s = hzCell(hz.stats[H])
+                if (!s || s.insufficient) return null
+                const on = hz.horizon === Number(H)
+                return (
+                  <tr key={H} className={on ? 'on' : ''}>
+                    <td>{H} 日{on ? ' ★' : ''}</td>
+                    <td className={`num ${s.excess >= 0 ? 'up' : 'down'}`}>{pct(s.excess)}</td>
+                    <td className="num">{pct(s.win, 0, false)}</td>
+                    <td className="num down">{pct(s.dd)}</td>
+                    <td className="num muted">{s.samples ?? '—'}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="dims">
         {Object.keys(DIM_LABEL).map((k) => (
@@ -137,121 +182,158 @@ function px(v?: number | null) {
   return v === null || v === undefined ? '—' : v.toFixed(3)
 }
 
-const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
+const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', AVOID: '回避', WATCH: '观察' }
 
 /** 一笔在场（或待出手）持仓。数据全部来自结算层对历史结论的重放，不是前端推算。 */
 function PosRow({ x, tone }: { x: any; tone?: 'sell' | 'warn' }) {
-  const up = (x.ret ?? 0) >= 0
+  const hasRet = x.ret !== null && x.ret !== undefined && !Number.isNaN(x.ret)
+  const up = hasRet && x.ret >= 0
   return (
     <div className={`posrow ${tone || ''}`}>
       <div className="r1">
         <span className="nm">{x.sw}</span>
         <span className="etf">{x.etf}</span>
-        <span className="cd num">{x.etf_code}</span>
+        <span className="cd num">{x.etf_code || '—'}</span>
         {x.action && (
           <Chip tone={x.action === 'BUY_NOW' ? 'up' : 'ambush'}>
             {ACT_TXT[x.action] || x.action}
           </Chip>
         )}
         {x.invalid && <Chip tone="warn">失效预警</Chip>}
+        {/* 盈亏比例固定在右上角 */}
+        <span className={`rt ${hasRet ? (up ? 'up' : 'down') : ''}`}>{pct(x.ret)}</span>
       </div>
       <div className="r2">
         <span>买入 {x.buy_date} @{px(x.buy_price)}</span>
         <span>现价 {px(x.price)}</span>
-        <span className={`rt ${up ? 'up' : 'down'}`}>{pct(x.ret)}</span>
         <span>已持有 {x.held} 个交易日</span>
-        <span className="due">建议周期 {x.horizon} 日</span>
       </div>
       <div className="r3">
-        {x.exit_hint}
+        {x.exit_hint && <span className="due">命中规则：{x.exit_hint}</span>}
         {x.invalid_note ? ` · ${x.invalid_note}` : ''}
-        {x.score !== undefined ? ` · 综合分 ${num(x.score, 1)}` : ''}
+        {x.score !== undefined && x.score !== null ? ` · 综合分 ${num(x.score, 1)}` : ''}
       </div>
     </div>
   )
 }
 
-/** 今日出手：从历史结论重放出的持仓里，挑出命中交易规则需要动手的标的。 */
+/** 今日出手：只关注当日到期的出手标的。 */
 function ActionToday({ a }: { a: any }) {
   if (!a) {
     return (
       <div className="card">
-        <div className="colhead"><h2>今日出手</h2></div>
+        <div className="colhead"><h2>当日出手</h2></div>
         <div className="empty">未生成持仓回执（缺少 ETF 结算数据）</div>
       </div>
     )
   }
   const sell = a.sell_today || []
-  const warn = a.warn || []
-  const soon = a.sell_soon || []
-  const open = a.open || []
   return (
     <div className="card">
       <div className="colhead">
-        <h2>今日出手 · {a.as_of}</h2>
-        <span className="n">在场持仓 {a.n_open} 笔</span>
-      </div>
-
-      <div className="actkpi">
-        <div className={`k ${sell.length ? 'sell' : ''}`}>
-          <div className="kl">今日到期出手</div>
-          <div className="kv num">{sell.length}<Small>笔</Small></div>
-        </div>
-        <div className={`k ${warn.length ? 'warn' : ''}`}>
-          <div className="kl">失效条件预警</div>
-          <div className="kv num">{warn.length}<Small>笔</Small></div>
-        </div>
-        <div className="k">
-          <div className="kl">{a.soon_days ?? 5} 日内到期</div>
-          <div className="kv num">{soon.length}<Small>笔</Small></div>
-        </div>
-        <div className="k">
-          <div className="kl">平均已持有</div>
-          <div className="kv num">{a.avg_held ?? '—'}<Small>日</Small></div>
-        </div>
+        <h2>当日出手 · {a.as_of}</h2>
       </div>
 
       <div className="actsec">
-        <div className="sh"><i className="dot sell" />今日到期出手
+        <div className="sh"><i className="dot sell" />当日出手
           <span className="cnt">{sell.length} 笔 · 主口径：持有到建议周期结束当日收盘卖出</span>
         </div>
         {sell.length === 0
           ? <div className="muted small" style={{ padding: '4px 0' }}>
-              今日无到期标的。主口径下持仓一律持有到建议周期结束，到期日才出手。
+              当日无到期标的。主口径下持仓一律持有到建议周期结束，到期日才出手。
             </div>
           : sell.map((x: any, i: number) => <PosRow key={i} x={x} tone="sell" />)}
       </div>
+    </div>
+  )
+}
 
-      <div className="actsec">
-        <div className="sh"><i className="dot warn" />失效条件预警
-          <span className="cnt">{warn.length} 笔 · 结论写明的失效条件已触发（对照口径 B 的离场规则）</span>
-        </div>
-        {warn.length === 0
-          ? <div className="muted small" style={{ padding: '4px 0' }}>无持仓触发失效条件。</div>
-          : warn.map((x: any, i: number) => <PosRow key={i} x={x} tone="warn" />)}
+const ACT_TONE: Record<string, 'up' | 'ambush' | 'warn' | 'dim'> = {
+  BUY_NOW: 'up', AMBUSH: 'ambush', AVOID: 'warn', WATCH: 'dim',
+}
+
+/** 行业周期阶段（引擎 scoring.compute_stage 的展示层标注，仅描述不参与结论） */
+const STAGE_TXT: Record<string, string> = {
+  SPROUT: '萌发期', CONFIRM: '确认期', MID: '中期', MATURE: '成熟期',
+}
+
+/**
+ * 行业全景表：当日全部候选行业的评分与前瞻统计。
+ * ranking 由引擎逐日导出（ark-1.2.0+）；老日文件用 picks/avoid/watch_top 拼降级版。
+ */
+function useRankingRows(data: any): any[] {
+  return React.useMemo(() => {
+    if (data.ranking && data.ranking.length) return data.ranking
+    const rows: any[] = [
+      ...(data.picks || []).map((p: any) => ({
+        code: p.code, name: p.name, level: p.level, composite: p.composite,
+        action: p.action, etf: p.etf, etf_code: p.etf_code,
+        hz: p.horizon && p.horizon.stats ? p.horizon.stats : null,
+        hz_picked: p.horizon ? p.horizon.horizon : null,
+      })),
+      ...(data.avoid || []).map((a: any) => ({
+        code: a.code, name: a.name, level: a.level, composite: a.composite,
+        action: 'AVOID', etf: null, etf_code: null, hz: null, hz_picked: null,
+      })),
+      ...(data.watch_top || []).map((w: any) => ({
+        code: w.code, name: w.name, level: w.level, composite: w.composite,
+        action: 'WATCH', etf: null, etf_code: null, hz: null, hz_picked: null,
+      })),
+    ]
+    return rows.sort((a, b) => b.composite - a.composite)
+  }, [data])
+}
+
+function RankingTable({ data }: { data: any }) {
+  const rows = useRankingRows(data)
+  if (!rows.length) return null
+  return (
+    <div className="card">
+      <div className="colhead">
+        <h2>行业全景 · {data.date}</h2>
+        <span className="n">{rows.length} 个候选 · 按综合分排序</span>
       </div>
-
-      <div className="actsec">
-        <div className="sh"><i className="dot soon" />{a.soon_days ?? 5} 个交易日内即将出手
-          <span className="cnt">{soon.length} 笔</span>
-        </div>
-        {soon.length === 0
-          ? <div className="muted small" style={{ padding: '4px 0' }}>未来 {a.soon_days ?? 5} 个交易日内无持仓到期。</div>
-          : soon.map((x: any, i: number) => <PosRow key={i} x={x} />)}
-      </div>
-
-      <div className="actsec">
-        <div className="sh"><i className="dot hold" />在场持仓全貌
-          <span className="cnt">{open.length} 笔 · 按到期日排序</span>
-        </div>
-        <div className="subscroll">
-          {open.length === 0
-            ? <div className="muted small">当前无在场持仓。</div>
-            : open.map((x: any, i: number) => <PosRow key={i} x={x} />)}
-        </div>
-      </div>
-
-      <div className="actnote">{a.rule}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>行业</th><th>综合分</th><th>动作</th><th>阶段</th><th>可交易 ETF</th>
+            <th>预测超额（建议周期）</th><th className="num">60 日</th><th className="num">80 日</th><th className="num">100 日</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const best = r.hz_picked ? String(r.hz_picked) : null
+            const bestCell = best && r.hz ? hzCell(r.hz[best]) : null
+            return (
+              <tr key={r.code || i} className={r.action === 'BUY_NOW' || r.action === 'AMBUSH' ? 'rank-hit' : ''}>
+                <td>
+                  {r.name} <span className="muted small">{r.level === 'L1' ? '一级' : '细分'}</span>
+                </td>
+                <td className="num">{num(r.composite, 1)}</td>
+                <td><Chip tone={ACT_TONE[r.action] || 'dim'}>{ACT_TXT[r.action] || r.action || '观察'}</Chip></td>
+                <td className="muted">{STAGE_TXT[r.stage] || '—'}</td>
+                <td className="muted">{r.etf ? `${r.etf} ${r.etf_code || ''}` : '—'}</td>
+                {bestCell ? (
+                  <td className={`num ${bestCell.excess >= 0 ? 'up' : 'down'}`}>
+                    {pct(bestCell.excess)} <span className="muted small">/{best} 日</span>
+                  </td>
+                ) : (
+                  <td className="muted">—</td>
+                )}
+                {HZ_KEYS.map((H) => {
+                  const s = r.hz ? hzCell(r.hz[H]) : null
+                  if (!s || s.insufficient) return <td key={H} className="num muted">—</td>
+                  return (
+                    <td key={H} className={`num ${s.excess >= 0 ? 'up' : 'down'}${best === H ? ' rank-best' : ''}`}>
+                      {pct(s.excess)}
+                    </td>
+                  )
+                })}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -262,11 +344,21 @@ function Small({ children }: { children: React.ReactNode }) {
 
 export default function Today({ data }: { data: any }) {
   const ri = data.regime_info || {}
-  const comps = ri.components || {}
+  const comps = ri.components || null
+  const offline = !!data._offline
   if (data.error) return <div className="card"><div className="empty">{data.date} 无有效结论：{data.error}</div></div>
 
   return (
     <>
+      {offline && (
+        <div className="card" style={{ padding: '10px 16px', borderLeft: '3px solid var(--warn)', marginBottom: 14 }}>
+          <div className="small" style={{ color: 'var(--ink-2)' }}>
+            此历史日的市场环境细分、回避清单、观察区需逐日行情数据，离线无法还原，暂不展示；
+            入场结论与当日出手（真实结算）已完整呈现。行情恢复后重跑管线将自动补齐。
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="env">
           <div className="env-main">
@@ -275,39 +367,46 @@ export default function Today({ data }: { data: any }) {
               {REGIME_TXT[data.regime] || data.regime}
             </div>
             <div className="env-score">
-              热度 {num(ri.env_score, 0)} · 置信度 {num(ri.confidence, 2)}
+              热度 {num(ri.env_score, 0)}{ri.confidence != null ? ` · 置信度 ${num(ri.confidence, 2)}` : ''}
               {ri.forced ? ' · 触发极端保护' : ''}
             </div>
           </div>
-          <div className="env-parts">
-            {[
-              ['宽度', comps.breadth], ['趋势', comps.trend], ['动能', comps.momentum],
-              ['低波', comps.vol], ['流动性', comps.liquidity],
-            ].map(([l, v]: any, i) => (
-              <div className="env-part" key={i}>
-                <div className="l">{l}</div>
-                <div className="b"><i style={{ width: `${Math.max(3, v || 0)}%` }} /></div>
+          {comps ? (
+            <>
+              <div className="env-parts">
+                {[
+                  ['宽度', comps.breadth], ['趋势', comps.trend], ['动能', comps.momentum],
+                  ['低波', comps.vol], ['流动性', comps.liquidity],
+                ].map(([l, v]: any, i) => (
+                  <div className="env-part" key={i}>
+                    <div className="l">{l}</div>
+                    <div className="b"><i style={{ width: `${Math.max(3, v || 0)}%` }} /></div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <div style={{ minWidth: 190 }} className="small muted">
-            <div>行业 20 日上涨占比 <b className="num">{pct(ri.breadth20, 0, false)}</b></div>
-            <div>行业中位数 20 日 <b className="num">{pct(ri.median_ret20)}</b></div>
-            <div>基准 20/60 日 <b className="num">{pct(ri.bench_ret20)}</b> · 回撤 <b className="num">{pct(ri.bench_dd60)}</b></div>
-            <div>波动历史分位 <b className="num">{num(ri.vol_pct, 2)}</b></div>
-          </div>
+              <div style={{ minWidth: 190 }} className="small muted">
+                <div>行业 20 日上涨占比 <b className="num">{pct(ri.breadth20, 0, false)}</b></div>
+                <div>行业中位数 20 日 <b className="num">{pct(ri.median_ret20)}</b></div>
+                <div>基准 20/60 日 <b className="num">{pct(ri.bench_ret20)}</b> · 回撤 <b className="num">{pct(ri.bench_dd60)}</b></div>
+                <div>波动历史分位 <b className="num">{num(ri.vol_pct, 2)}</b></div>
+              </div>
+            </>
+          ) : (
+            <div className="small muted" style={{ minWidth: 190 }}>
+              环境细分数据暂缺（离线重建）
+            </div>
+          )}
         </div>
       </div>
 
       <div className="twocol">
         <div className="card">
           <div className="colhead">
-            <h2>今日结论 · {data.date}</h2>
-            <span className="n">候选池 {data.universe_size} 个行业/赛道</span>
+            <h2>当日结论 · {data.date}</h2>
+            <span className="n">候选池 {data.universe_size != null ? data.universe_size : '—'} 个行业/赛道</span>
           </div>
-          <div className="note" style={{ marginBottom: 14 }}>{data.summary}</div>
           {data.picks.length === 0 ? (
-            <div className="empty">今日无行业通过共振门槛。空仓等待本身也是结论。</div>
+            <div className="empty">当日无行业通过共振门槛。空仓等待本身也是结论。</div>
           ) : (
             data.picks.map((p: any, i: number) => <PickCard key={i} p={p} />)
           )}
@@ -315,6 +414,8 @@ export default function Today({ data }: { data: any }) {
 
         <ActionToday a={data.action_today} />
       </div>
+
+      <RankingTable data={data} />
 
       {data.avoid && data.avoid.length > 0 && (
         <div className="card">

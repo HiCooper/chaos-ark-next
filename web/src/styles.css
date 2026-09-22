@@ -299,6 +299,7 @@ table th { font-weight: 600; color: var(--ink-2); }
 .twocol {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 14px; align-items: start;
+  margin-bottom: 14px;
 }
 @media (max-width: 1000px) { .twocol { grid-template-columns: 1fr; } }
 .twocol > .card { margin-bottom: 0; }
@@ -334,6 +335,7 @@ table th { font-weight: 600; color: var(--ink-2); }
 .actsec .sh .dot.hold { background: var(--ink-3); }
 
 .posrow {
+  position: relative;
   border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 10px; margin-bottom: 6px; background: #fff;
 }
@@ -348,7 +350,11 @@ table th { font-weight: 600; color: var(--ink-2); }
   font-size: 11.5px; color: var(--ink-2); margin-top: 3px;
 }
 .posrow .r3 { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
-.posrow .rt { font-weight: 640; font-variant-numeric: tabular-nums; }
+/* 盈亏比例：固定在持仓卡右上角（r1 中占位，绝对定位对齐卡片内边距） */
+.posrow .rt {
+  position: absolute; right: 10px; top: 8px;
+  font-weight: 640; font-variant-numeric: tabular-nums;
+}
 .posrow .rt.up { color: var(--up); }
 .posrow .rt.down { color: var(--down); }
 .posrow .due { font-size: 11px; color: var(--ink-3); }
@@ -406,53 +412,122 @@ table th { font-weight: 600; color: var(--ink-2); }
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 16px 16px 12px;
+  padding: 14px 16px 12px;
   margin-bottom: 16px;
 }
-.hist-scroll { overflow-x: auto; padding-bottom: 4px; }
-.hist-inner { position: relative; }
-.hist-months { position: relative; height: 16px; font-size: 11px; color: var(--ink-3); }
-.hist-months span { position: absolute; top: 0; }
-.hist-body { position: relative; }
-.hist-days { display: flex; gap: 3px; margin: 2px 0 4px; padding-left: 26px; }
-.hist-days i {
-  width: 10px; text-align: center; font-style: normal;
-  font-size: 10px; color: var(--ink-3); display: inline-block;
+/* 头部：日期大字 + 结论日序号 + 年份快捷定位 + 上一天/下一天 */
+.hist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
 }
-.hist-grid { display: flex; gap: 3px; }
-.hist-col { display: flex; flex-direction: column; gap: 3px; }
-.hist-col.month-start { margin-left: 7px; }
+.date-line { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.date-big {
+  font-weight: 900; font-size: 24px; letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.date-weekday { font-size: 12.5px; color: var(--ink-3); }
+.hist-head-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.year-jumps { display: flex; gap: 4px; }
+.year-select {
+  appearance: none; -webkit-appearance: none;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink-2);
+  font-size: 13px; padding: 5px 26px 5px 12px; border-radius: 4px;
+  cursor: pointer; font-variant-numeric: tabular-nums; font-family: inherit;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-3) 50%),
+    linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+.year-select:hover { border-color: var(--accent); color: var(--accent); }
+.year-select:focus { outline: 2px solid var(--accent-soft, var(--accent)); outline-offset: 1px; }
+.year-jump {
+  appearance: none; border: 1px solid var(--line); background: var(--card);
+  color: var(--ink-2); font-size: 12px; padding: 3px 10px; border-radius: 4px;
+  cursor: pointer; font-variant-numeric: tabular-nums; font-family: inherit;
+  transition: border-color 0.15s, color 0.15s;
+}
+.year-jump:hover { border-color: var(--accent); color: var(--accent); }
+.year-jump.on { border-color: var(--accent); color: var(--accent); font-weight: 600; background: var(--accent-soft); }
+.nav-arrows { display: flex; gap: 6px; }
+.arrow-btn {
+  appearance: none; width: 30px; height: 30px;
+  border: 1px solid var(--line); background: var(--card); border-radius: 4px;
+  cursor: pointer; font-size: 14px; color: var(--ink-2);
+  display: grid; place-items: center; transition: border-color 0.15s;
+}
+.arrow-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.arrow-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* 不设 scroll-behavior:smooth——它会把 JS 里 behavior:'auto' 的定位滚动
+   也变成平滑动画，表现为刷新时日历「滚动一下」。需要动画的滚动在 JS 里显式传 smooth。 */
+.hist-scroll { overflow-x: auto; padding-bottom: 2px; }
+/* 月份分列布局：对齐完全交给 flex（月份名在上、周行在下、月份横排） */
+.hist-flow { display: flex; gap: 14px; padding: 0 26px 2px 12px; align-items: flex-start; }
+.hmonth { display: flex; flex-direction: column; gap: 3px; flex: none; }
+/* 月份之间的浅色竖线间隔（stretch：短月也拉到整行高，竖线贯穿；
+   height: stretch 兼容性不足，用 align-self: stretch 达成同一效果） */
+.hmonth + .hmonth { border-left: 1px solid var(--line-2); margin-left: -7px; padding-left: 7px; height: stretch; align-self: stretch; }
+.hmonth-name { height: 16px; font-size: 11px; line-height: 16px; color: var(--ink-3); }
+.hmonth-grid { display: flex; flex-direction: column; gap: 3px; }
+.hweek { display: flex; gap: 3px; }
 .hcell {
   width: 10px; height: 10px; border-radius: 2px; border: none; padding: 0;
   cursor: pointer; position: relative; background: #e6e9ef;
   display: inline-block; box-sizing: border-box;
 }
 .hcell.empty { background: transparent; cursor: default; }
-.hcell.is-attack { background: #e8b3b3; }
-.hcell.is-neutral { background: #b8c5e0; }
-.hcell.is-defend { background: #ecd9b0; }
-.hcell.is-panic { background: #a8d5b8; }
+/* 配色对齐旧站（localhost:4173）的纸墨色系：
+   趋势红 #c34f54 / 中性米灰 #ddd8cb / 防守琥珀 #b08b47 / 恐慌青灰 #737b86，
+   纯色扁平，色相/明度按旧站口径，观感是「宣纸上的印章」而不是糖果色 */
+.hcell.is-attack { background: #c34f54; }
+.hcell.is-neutral { background: #ddd8cb; }
+.hcell.is-defend { background: #b08b47; }
+.hcell.is-panic { background: #737b86; }
 .hcell.selected { outline: 2px solid var(--ink); outline-offset: 1px; }
+.hcell:not(.empty):hover { transform: scale(1.35); }
+/* 入手：朱砂圆点（旧站 --cinnabar），细白描边提亮边缘 */
 .hcell.has-buy::after {
-  content: ""; position: absolute; left: 3px; top: 3px; width: 4px; height: 4px;
-  border-radius: 50%; background: #7a1f1f;
+  content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: #b4232a; box-shadow: 0 0 0 1px var(--card);
 }
-.hmark {
-  position: absolute; right: 1px; bottom: 1px; width: 3px; height: 3px;
-  border-radius: 1px; background: var(--ambush); display: block;
+/* 埋伏：琥珀圆点（旧站 --amber），同形不同色 */
+.hcell .hmark {
+  position: absolute; left: 50%; top: 50%; width: 4px; height: 4px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: #9a6b15; box-shadow: 0 0 0 1px var(--card);
+}
+/* 同日既有入手又有埋伏：两枚点各让半格并排（左入手 / 右埋伏），缩到 3px */
+.hcell.has-ambush.has-buy .hmark {
+  left: 7.5px; width: 3px; height: 3px;
+}
+.hcell.has-ambush.has-buy::after {
+  left: 2.5px; width: 3px; height: 3px;
+}
+/* 出手日标记：底部绿色通栏横条（卖出 = 绿，与 B/S 点同语义）。
+   角落小方点在饱和状态色上辨识度不足，横条面积更大、位于底部边缘。 */
+.hcell.has-sell::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.5px;
+  border-radius: 0 0 2px 2px; background: #14684b;
 }
 .hist-legend {
   display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
-  font-size: 12px; color: var(--ink-2); margin-top: 10px;
+  font-size: 12px; color: var(--ink-2); margin-top: 6px;
 }
 .hist-legend .legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-.sw-attack { background: #e8b3b3; }
-.sw-neutral { background: #b8c5e0; }
-.sw-defend { background: #ecd9b0; }
-.sw-panic { background: #a8d5b8; }
-.sw-buy { background: #7a1f1f; border-radius: 50%; width: 8px; height: 8px; }
-.sw-ambush { background: var(--ambush); }
+.sw-attack { background: #c34f54; }
+.sw-neutral { background: #ddd8cb; }
+.sw-defend { background: #b08b47; }
+.sw-panic { background: #737b86; }
+.sw-buy { background: #b4232a; border-radius: 50%; width: 8px; height: 8px; }
+.sw-ambush { background: #9a6b15; border-radius: 50%; width: 8px; height: 8px; }
+.sw-sell { background: #14684b; height: 4px; border-radius: 1px; margin-top: 6px; }
 
 .hist-detail { margin-top: 0; }
 .hist-pick {
@@ -461,6 +536,25 @@ table th { font-weight: 600; color: var(--ink-2); }
 }
 .hist-pick.buy { border-left: 3px solid var(--up); }
 .hist-pick.ambush { border-left: 3px solid var(--ambush); }
+
+/* ---- 入手结论卡：持有周期敏感性表 ---- */
+.hz-deep {
+  margin: 10px 0 2px; padding: 10px 12px;
+  background: var(--bg, #f7f8fa); border: 1px solid var(--line); border-radius: 6px;
+}
+.hzd-title { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; font-weight: 600; }
+.hzd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.hzd-table th, .hzd-table td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--line); }
+.hzd-table th { color: var(--ink-3); font-weight: 500; }
+.hzd-table tr:last-child td { border-bottom: none; }
+.hzd-table tr.on td { background: var(--accent-soft, rgba(31,58,138,0.06)); font-weight: 600; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+
+/* ---- 行业全景表 ---- */
+tr.rank-hit td { background: var(--accent-soft, rgba(31,58,138,0.05)); }
+td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3); text-underline-offset: 3px; }
+.chip.dim { color: var(--ink-3); border-color: var(--line); }
 .hp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .hp-name { font-weight: 640; font-size: 14px; }
 .hp-score { margin-left: auto; display: flex; align-items: baseline; gap: 6px; }

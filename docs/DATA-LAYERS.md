@@ -1,0 +1,90 @@
+# ARK 数据分层设计
+
+> 核心原则：**同一份 config + 同一份 L1 面板 ⇒ 同一份结论（逐字可重放）**。
+> 每一层只依赖它的下一层；任何非 L0 层都可以被删除后从下一层完整重建。
+
+## 分层总览
+
+```
+L0  data/raw/            一手底层数据（外部API原样快照）   不可变，只增不改
+L1  cache/               派生面板                          可从 L0 重算
+L2  cache/               特征 / 环境序列                   可从 L1 重算
+L3  web/public/data      导出层（前端消费）                可从 L2 重算
+L4  cache/               实验台一次性产物                  可随时删除
+```
+
+## L0 — 原始层 `data/raw/`（不可变）
+
+外部数据源的**原样快照**，这是系统的地基。拉下来之后不改：
+
+| 目录/文件 | 内容 | 来源 |
+|---|---|---|
+| `catalog/sw_all.json` | 申万 L1/L2/L3 层级目录（代码+名称） | 申万宏源官方（akshare） |
+| `sw_index/<code>.json` | 每个申万指数的日K（801010 等，2004 至今） | 申万宏源官方（akshare） |
+| `bench/<code>.json` | 基准指数日K（上证/沪深300/创业板指/中证1000/中证500） | 新浪（akshare） |
+| `etf/<secid>.json` | ETF 日K（前复权，成交额单位：元） | 新浪（akshare） |
+| `kline_em/` | 东财 BK/基准日K（旧路径，东财解封后仍可用） | 东方财富 push2his |
+| `manifest.json` | 每个文件的 source / fetched_at / rows / 区间 / sha256 | 本地生成 |
+
+**不可变语义**（`engine/rawstore.py`）：
+- write-once + merge-append：重复抓取时新日期追加，重叠日期**保留首采值**，绝不覆盖。
+- 每次写入更新 manifest（含 sha256），`python rawstore.py` 可校验文件是否被人为改动。
+- 已知口径风险：前复权价在除权后会整体重述；重叠日期保留首采值意味着除权日附近
+  可能有微小断层。重放不变式由 L1 冻结面板保证，不依赖 L0 逐字节复现。
+
+## L1 — 派生面板 `cache/`
+
+| 文件 | 内容 | 重建命令 |
+|---|---|---|
+| `panel.json` | 行业宇宙（申万L1+L2/L3佐证+基准）统一交易日轴行情面板 | `python datasource_sw.py [--refresh]` |
+| `etf_panel.json` | 每行业可交易 ETF + 逐日选择 + 流动性 | `python build_etf_panel.py` |
+| `all_blocks.json` / `fund_names.json` | 东财板块列表 / 基金名称表（辅助） | 随上述脚本自动补 |
+
+这一层是**冻结点**：结论可重放性以 panel.json 的内容为准。刷新数据 = 生成新面板 =
+新结论基线，属于显式行为。
+
+## L2 — 特征层 `cache/`
+
+| 文件 | 内容 | 重建命令 |
+|---|---|---|
+| `features.npz`(+meta) | 标的×日期×字段 三维张量（26 个序列特征 + 相对强度） | `pipeline.py --refresh` 或 `feature_store.py` |
+| `regime.json` | 环境序列（ATTACK/NEUTRAL/DEFEND/PANIC） | 随 `--refresh` 自动重建 |
+
+## L3 — 导出层 `web/public/data/`
+
+`history.json` / `today.json` / `day/<date>.json` / `review.json`。
+由 `pipeline.py --all` 从 L2 全量重放生成；`site/data/` 是它的部署副本。
+**可以整目录删除**，重跑 pipeline 即可恢复。
+
+## L4 — 实验台 `cache/`
+
+`lab_*.json` / `ic_diag*.json` / `lab_trades.json` 等：一次性实验产物，
+可随时删除，不参与正式管线。
+
+## 重跑手册
+
+```bash
+# 数据源主路径：申万官方 + 新浪（akshare，不依赖东财）
+cd engine && akshare-venv-python datasource_sw.py --refresh   # L0+L1 面板
+akshare-venv-python build_etf_panel.py                        # L1 ETF 面板
+venv-python pipeline.py --refresh --all                       # L2+L3 全量
+
+# 东财路径（限流解除后可作为备源）
+venv-python datasource.py --refresh                           # 写 data/raw/kline_em/
+# 备源切换说明：两种来源的指数代码命名空间不同（90.BKxxxx vs 801xxx），
+# 切换 = 换结论基线，需全量重跑并披露，不可混用两代面板。
+
+# L0 完整性校验
+venv-python rawstore.py
+```
+
+## 稳定性与扩展性约定
+
+1. **下游只认 schema，不认来源**：feature_store / scoring / classify 只依赖
+   panel 的 `{dates, meta{name,level}, series}` 结构；换数据源不改下游。
+2. **新数据源接入** = 写一个新的 builder 模块产出同构 panel.json，注册进
+   本文档；绝不在打分/分类代码里写 if-else 判断来源。
+3. **派生层丢失不告急**：只要 L0 在，任何一层都能离线重建；只有 L0 丢失才
+   需要重新触网。
+4. **禁止手改 L0**：修正数据错误 = 修抓取代码 + `--refresh` 重新抓取，
+   不允许直接编辑 raw 文件（manifest sha256 会立刻暴露）。

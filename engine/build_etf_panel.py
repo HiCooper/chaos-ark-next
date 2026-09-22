@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 import datasource as DS  # noqa: E402
+import datasource_sw as DSW  # noqa: E402
 import etf_map as EM  # noqa: E402
 
 OUT_PATH = f"{C.CACHE_DIR}/etf_panel.json"
@@ -53,14 +54,14 @@ def load_fund_names() -> Dict[str, str]:
 
 
 def scan_etfs(refresh: bool = False, verbose: bool = True) -> Dict[str, dict]:
-    """抓取全部候选 ETF，记录上市日与流动性。"""
+    """抓取全部候选 ETF，记录上市日与流动性。行情走新浪（东财被限流时可用）。"""
     info: Dict[str, dict] = {}
     names = load_fund_names()
     cands = EM.all_etf_secids()
     for k, (sid, name) in enumerate(cands):
         code = sid.split(".")[-1]
         name = names.get(code, name)
-        s = DS.fetch_kline(sid, refresh=refresh)
+        s = DSW.fetch_etf_daily(sid, refresh=refresh)
         if not s:
             if verbose:
                 print(f"  [fail] {sid} {name}")
@@ -179,7 +180,7 @@ def build(refresh: bool = False, verbose: bool = True) -> dict:
 
     series: Dict[str, dict] = {}
     for sid in info:
-        s = DS.fetch_kline(sid)
+        s = DSW.fetch_etf_daily(sid)
         if not s:
             continue
         series[sid] = {d["date"]: d for d in s if d["date"] in dset}

@@ -537,9 +537,51 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
             "action": e.get("action"), "reason": e.get("etf_reason"),
         } for e in settled]
 
+        # ---- 数据末端「已买入、未结算」的结论（open edge）----
+        # settle_trade 对卖出日（T+1+H）超出数据末端的结论返回 None，
+        # 这些结论因此整体缺席 evals / settled。但 T+1 的买入在现实中
+        # 已经发生，不能因为「周期还没走完」就当没买过——否则曲线右端
+        # 只有 S 没有 B、持仓被人为清零。这里把它们补进组合模拟：
+        # B 照常入账、持仓在场逐日按收盘价计值、无卖出事件；
+        # 单笔胜率等统计（下方 ex/ret 数组、by_year、by_phase）仍只用
+        # 完整结算的 trades，口径不被未实现收益污染。
+        settled_keys = {(e["date"], e["name"]) for e in settled}
+        open_edge: List[dict] = []
+        for d in dates:
+            day_c = conclusions.get(d) or {}
+            if day_c.get("error"):
+                continue
+            i0 = book.idx.get(d)
+            if i0 is None or i0 + 1 >= len(book.dates):
+                continue
+            b_i = i0 + 1
+            for p in day_c["picks"]:
+                if (d, p["name"]) in settled_keys:
+                    continue
+                H = int(p.get("horizon", {}).get("horizon") or 0)
+                if H <= 0:
+                    continue
+                # 注意：p["etf_code"] 是 6 位展示码，账簿键是全码（1.515880），
+                # 必须经 etf_of 按买入日解析；展示码只作后备提示。
+                sid = book.etf_of(p["name"], book.dates[b_i])
+                if not sid and p.get("etf_code"):
+                    hits = [k for k in book.series
+                            if k.split(".")[-1] == str(p["etf_code"])]
+                    sid = hits[0] if len(hits) == 1 else None
+                if not sid or not book.open_(sid, b_i):
+                    continue
+                open_edge.append({
+                    "date": d, "sw_name": p["name"], "horizon": H,
+                    "composite": p.get("composite", 0),
+                    "etf_sid": sid, "action": p.get("action"),
+                    "open_edge": True,
+                })
+        # 组合模拟用「完整结算 + 在途」的全集；单笔统计口径维持 settled-only
+        trades_exec = trades + open_edge
+
         RC = C.RISK_CONTROL
         PF = C.PORTFOLIO
-        pf_etf = simulate_etf_portfolio(book, trades, start_date=dates[0],
+        pf_etf = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                         max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                                         risk_parity=RC["risk_parity"],
                                         rp_window=RC["rp_window"],
@@ -550,7 +592,7 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                                         score_tilt=PF["score_tilt"],
                                         max_new_per_day=PF["max_new_per_day"])
         # 对照：未加风控的原始口径（等权 + 满仓），保留以便复核改进幅度
-        pf_base = simulate_etf_portfolio(book, trades, start_date=dates[0],
+        pf_base = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                          max_holdings=C.CLASSIFY["max_daily_picks"] * 4)
         # 暴露下限敏感性：把「降回撤」与「年化」的取舍显式摆出来
         floor_scan = []
@@ -559,7 +601,7 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                 s = pf_etf["stats"]
             else:
                 s = simulate_etf_portfolio(
-                    book, trades, start_date=dates[0],
+                    book, trades_exec, start_date=dates[0],
                     max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                     risk_parity=RC["risk_parity"], rp_window=RC["rp_window"],
                     vol_target=RC["vol_target"], vol_window=RC["vol_window"],
@@ -582,7 +624,7 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
         conc_scan = []
         for cap in (None, 4, 3, 2):
             s_c = simulate_etf_portfolio(
-                book, trades, start_date=dates[0],
+                book, trades_exec, start_date=dates[0],
                 max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                 risk_parity=RC["risk_parity"], rp_window=RC["rp_window"],
                 vol_target=RC["vol_target"], vol_window=RC["vol_window"],
@@ -604,7 +646,7 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
             })
 
         # 对照组：加「市场趋势门控」（复盘结论：原版在 2021-09 后水下 815 日）
-        pf_gated = simulate_etf_portfolio(book, trades, start_date=dates[0],
+        pf_gated = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                           max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                                           market_gate=True)
 
@@ -763,6 +805,9 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
             "n_settled": len(settled),
             "n_signal_only": len(signal_only),
             "n_total": len(evals),
+            # 数据末端「已买入、未结算」的结论数：已进入组合模拟（B 在、S 未到），
+            # 不参与单笔胜率统计
+            "n_open_edge": len(open_edge),
             "win_rate_excess": round(win_excess, 4) if win_excess is not None else None,
             "win_rate_abs": round(win_abs, 4) if win_abs is not None else None,
             "avg_ret": round(float(ret_arr_e.mean()), 4) if ret_arr_e.size else None,

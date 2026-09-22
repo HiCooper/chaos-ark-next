@@ -17,7 +17,8 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 
-RAW_DIR = f"{C.CACHE_DIR}/raw"
+# L0 原始层：外部 API 一手快照，落盘后不可变（见 rawstore.py / docs/DATA-LAYERS.md）
+RAW_DIR = f"{C.ROOT}/data/raw/kline_em"
 
 
 def _curl(url: str) -> Optional[str]:

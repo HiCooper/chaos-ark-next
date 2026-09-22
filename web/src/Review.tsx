@@ -227,18 +227,27 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
     return out
   })()
 
-  // 悬浮：图上一次悬浮给出「这一天净值多少 / 当天结论是什么 / 当天成交了什么」
-  const mkByI = new Map<number, Marker>()
-  for (const mk of markers) mkByI.set(mk.i, mk)
+  // 悬浮：图上一次悬浮给出「这一天净值多少 / 当天结论是什么 / 当天成交了什么」。
+  // 同一天可能同时有买入和卖出（到期平仓与新开仓撞在一天），B/S 是两个 Marker，
+  // 必须按数组收纳再逐个渲染——用单值 Map 会让后写的一方覆盖先写的一方，
+  // 悬浮就只剩一边的成交信息。
+  const mkByI = new Map<number, Marker[]>()
+  for (const mk of markers) {
+    const arr = mkByI.get(mk.i)
+    if (arr) arr.push(mk)
+    else mkByI.set(mk.i, [mk])
+  }
   const tradeHtml = (i: number): string => {
-    const mk = mkByI.get(i)
-    if (!mk) return ''
-    const rows = mk.lines.map((l) => `<div class="ek-pick">
+    const mks = mkByI.get(i)
+    if (!mks || !mks.length) return ''
+    return mks.map((mk) => {
+      const rows = mk.lines.map((l) => `<div class="ek-pick">
         <span class="ek-g">${l.tag ? `<em class="ek-tag ${l.tagTone || 'mute'}">${l.tag}</em>` : ''}<b>${l.text}</b></span>
         <span class="ek-dim ${l.tone === 'up' ? 'ek-up' : l.tone === 'down' ? 'ek-down' : ''}">${l.sub || ''}</span>
       </div>`).join('')
-    return `<div class="ek-sec">当日成交 · ${mk.k === 'B' ? '买入' : '卖出'}</div>${rows}
-      ${mk.foot ? `<div class="ek-mute">${mk.foot}</div>` : ''}`
+      return `<div class="ek-sec">当日成交 · ${mk.k === 'B' ? '买入' : '卖出'}</div>${rows}
+        ${mk.foot ? `<div class="ek-mute">${mk.foot}</div>` : ''}`
+    }).join('')
   }
 
   // 逐笔成交明细（一行 = 一次完整交易，取自卖出回执）
@@ -415,6 +424,10 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             实际只成交 <b>{sts.executed_trades}</b> 笔，
             另有 {sts.blocked_by_capacity} 笔因没有槽位未建仓。
             也就是说：曲线只反映真正能执行的那部分，下面每个 B/S 点都是这 {sts.executed_trades} 笔之一。
+            {(sts.open_at_end ?? 0) > 0 && (
+              <>数据末端还有 <b>{sts.open_at_end}</b> 笔在途持仓（已买入、卖出日未到，
+              图上只有 B 没有 S，属正常在场，不算缺失）。</>
+            )}
           </div>
         )}
 
@@ -444,7 +457,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
               holdings={posHoldings.length >= allDates.length ? posHoldings.slice(lo, hi + 1) : []}
               maxHoldings={posMax}
               conclusions={viewConcl}
-              markerTip={(i: number) => mkByI.get(i)}
+              markerTip={(i: number) => mkByI.get(i) || []}
               tradeTip={tradeHtml}
             />
             <div className="note" style={{ marginTop: 8 }}>

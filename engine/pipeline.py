@@ -33,7 +33,7 @@ import review as RV  # noqa: E402
 import settlement as ST  # noqa: E402
 import rules as RULES  # noqa: E402
 
-ENGINE_VERSION = "ark-1.1.0-etf"
+ENGINE_VERSION = "ark-1.3.0-stage"
 
 
 def config_hash() -> str:
@@ -68,14 +68,16 @@ def load_context(refresh: bool = False, last_n: int = 3400) -> dict:
         rs = json.load(open(regime_path, "r", encoding="utf-8"))
 
     dims, comp = SC.build_score_matrix(fs, rs)
+    stages = SC.compute_stage(fs)
     fwd = HZ.precompute_forward(fs)
     state = HZ.build_state_matrix(fs, dims, rs)
-    return {"fs": fs, "regime": rs, "dims": dims, "comp": comp, "fwd": fwd, "state": state}
+    return {"fs": fs, "regime": rs, "dims": dims, "comp": comp, "fwd": fwd, "state": state,
+            "stages": stages}
 
 
 def run_day(ctx: dict, date: str, book: Optional[ST.EtfBook] = None) -> dict:
     day = CL.classify_day(ctx["fs"], ctx["dims"], ctx["comp"], ctx["regime"],
-                          ctx["state"], ctx["fwd"], date)
+                          ctx["state"], ctx["fwd"], date, stages=ctx.get("stages"))
     if not day.get("error"):
         day["summary"] = CL.summarize(day)
         # 给每条结论绑定「能真正买到的标的」，避免结论落在一个不可交易的指数上
@@ -92,6 +94,12 @@ def run_day(ctx: dict, date: str, book: Optional[ST.EtfBook] = None) -> dict:
                 sid = book.etf_of(p["name"], date)
                 p["tradable"] = sid is not None
                 p["etf"] = book.listing.get(sid, {}).get("name") if sid else None
+            # 全景表行也绑定可交易标的（仅标注，不参与结论）
+            for r in day.get("ranking", []):
+                sid = book.etf_of(r["name"], date)
+                if sid:
+                    r["etf"] = book.listing.get(sid, {}).get("name")
+                    r["etf_code"] = sid.split(".")[-1]
     day["engine_version"] = ENGINE_VERSION
     day["config_hash"] = config_hash()
     return day
@@ -140,8 +148,59 @@ def build_action_today(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
                              soon_days=10)
 
 
-def slim(day: dict) -> dict:
-    """历史结论精简版（供列表/图表用）。"""
+def build_hist_exits(book: Optional[ST.EtfBook], conclusions: Dict[str, dict],
+                     dates: List[str]) -> Dict[str, dict]:
+    """为每个交易日重建「当日出手判断」，供历史日历详情展示。
+
+    与 build_action_today 同源：复用 settlement.open_positions，逐日把 as_of 指到
+    那个交易日，得到截至当日仍在场的持仓里「命中交易规则需要动手」的标的。
+    返回结构与 action_today **完全同构**（as_of/n_open/n_sell_today/n_warn/
+    open/sell_today/sell_soon/warn/...），前端历史日详情直接复用今日页的
+    出手判断组件，无需为历史日另写一套渲染。
+
+    逐日文件独立落盘（day/<date>.json），体积不进入首屏 history.json。
+    复杂度 O(n²)，但 open_positions 每次只做轻量 dict 重放，2605 天量级可接受
+    （全量管线本身已需重放 2605 天，此步骤为纯增量）。
+    """
+    if book is None:
+        return {}
+    # 建一次 signal 列表（复用 build_action_today 的字段口径），逐日只换 as_of
+    signals: List[dict] = []
+    for d in dates:
+        day = conclusions.get(d) or {}
+        if day.get("error"):
+            continue
+        for p in day.get("picks", []):
+            hz = (p.get("horizon") or {}).get("horizon")
+            if not hz:
+                continue
+            signals.append({
+                "date": d, "sw_name": p["name"], "horizon": int(hz),
+                "composite": p.get("composite"), "action": p.get("action"),
+            })
+    if not signals:
+        return {}
+
+    out: Dict[str, dict] = {}
+    for d in dates:
+        at = ST.open_positions(book, signals, d,
+                               max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
+                               soon_days=10)
+        # open_positions 在 as_of 早于首笔建仓日时返回空回执（n_open=0），
+        # 此时仍保留完整结构，前端据此显示「空仓等待」而非「数据缺失」。
+        out[d] = at if at else {
+            "as_of": d, "n_open": 0, "n_sell_today": 0, "n_warn": 0,
+            "open": [], "sell_today": [], "sell_soon": [], "warn": [],
+        }
+    return out
+
+
+def slim(day: dict, exits: Optional[dict] = None) -> dict:
+    """历史结论索引精简版（供日历热力图 + 复盘「每日结论带」）。
+
+    exits = 该日的出手判断（build_hist_exits 的产物），只取 n_sell_today
+    一个整数进索引，供日历格渲染「当日有出手」标记。
+    """
     if day.get("error"):
         return {"date": day["date"], "error": day["error"], "picks": []}
     return {
@@ -149,6 +208,7 @@ def slim(day: dict) -> dict:
         "regime": day["regime"],
         "env_score": round(day["regime_info"]["env_score"], 1),
         "summary": day.get("summary", ""),
+        "n_sell": int((exits or {}).get("n_sell_today") or 0),
         "picks": [{
             "code": p["code"], "name": p["name"], "level": p["level"],
             "action": p["action"], "composite": p["composite"],
@@ -161,6 +221,22 @@ def slim(day: dict) -> dict:
             "dims": p["dims"],
         } for p in day["picks"]],
     }
+
+
+def day_payload(day: dict, exits: Optional[dict]) -> dict:
+    """单个交易日的完整研判载荷（day/<date>.json）。
+
+    与 history.json 的精简索引不同，这里保留 run_day 的完整结论（picks 全字段、
+    regime_info、avoid / watch_top 等），再附加该日的「出手判断」action_today ——
+    历史日详情与今日页共用同一套卡片渲染（字段名与 today.json 完全一致），
+    点开任意历史日看到的信息和今日一致。
+    """
+    if day.get("error"):
+        return {"date": day["date"], "error": day["error"],
+                "picks": [], "action_today": None}
+    payload = dict(day)  # 浅拷贝，避免污染 conclusions 里的原始 dict
+    payload["action_today"] = exits
+    return payload
 
 
 def main():
@@ -207,14 +283,25 @@ def main():
     print(f"[2/6] 重放 {len(dates)} 个交易日 ({dates[0]} -> {dates[-1]}) ...")
     conclusions = run_range(ctx, dates, book=book)
 
-    print("[3/6] 落盘历史结论 ...")
-    history = [slim(conclusions[d]) for d in dates]
+    print("[3/6] 逐日重建出手判断 ...")
+    exits_by_date = build_hist_exits(book, conclusions, dates)
+    n_exit_days = sum(1 for e in exits_by_date.values() if e["n_open"] > 0)
+
+    print("      落盘历史索引 + 逐日完整研判 ...")
+    history = [slim(conclusions[d], exits_by_date.get(d)) for d in dates]
     json.dump({
         "engine_version": ENGINE_VERSION, "config_hash": config_hash(),
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "universe": {"L1": len(fs.l1_codes()), "total": len(fs.codes)},
         "days": history,
     }, open(f"{C.OUT_DIR}/history.json", "w"), ensure_ascii=False)
+
+    day_dir = f"{C.OUT_DIR}/day"
+    os.makedirs(day_dir, exist_ok=True)
+    for d in dates:
+        json.dump(day_payload(conclusions[d], exits_by_date.get(d)),
+                  open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
+    print(f"      day/<date>.json × {len(dates)}（其中 {n_exit_days} 日有在场持仓）")
 
     print("[4/6] 落盘今日结论 ...")
     today = conclusions[dates[-1]]
@@ -250,6 +337,7 @@ def main():
     for f in ("history.json", "today.json", "review.json"):
         p = f"{C.OUT_DIR}/{f}"
         print(f"      {p}  {os.path.getsize(p)/1024:.0f} KB")
+    print(f"      {day_dir}/  {len(dates)} 个逐日文件（完整研判 + 出手判断）")
 
 
 if __name__ == "__main__":

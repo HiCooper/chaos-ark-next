@@ -434,8 +434,13 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
             s_i_ = book.idx.get(t["sell_date"], i0 + 1 + H)
         else:
             s_i_ = i0 + 1 + H
-        if b_i >= len(dates) or s_i_ >= len(dates) or s_i_ <= b_i:
+        if b_i >= len(dates) or s_i_ <= b_i:
             continue
+        # 卖出日超出数据末端的结论不再整笔丢弃：T+1 的买入在现实中已经发生，
+        # 只是建议周期尚未走完。丢弃会让曲线右端「只有 S 没有 B」、持仓被
+        # 人为清零。这里照常入账：B 事件照发，持仓保持在场、逐日按收盘价
+        # 计值（下方主循环对 h["end"] > k 的持仓本就只计值不强平），
+        # 卖出事件等数据真正走到到期日才产生。
         sid0 = t.get("etf_sid") or book.etf_of(t["sw_name"], dates[b_i])
         if sid0 is None:
             skipped_untradable += 1
@@ -629,6 +634,9 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
     inv = [min(1.0, h / max_holdings) * e for h, e in zip(hold_count, exposure_log)]
     stats["avg_invested"] = round(float(np.mean(inv)), 3) if inv else None
     stats["max_holdings_used"] = int(max(hold_count)) if hold_count else 0
+    # 数据末端仍在场的持仓数：已买入、卖出日未到（超出数据末端），
+    # 曲线上只有 B 没有 S 属正常在途，不是数据缺失
+    stats["open_at_end"] = len(holdings)
     # 成交事件里出现的 ETF 名称表（事件只存 secid，前端查名）
     used = {ev["sid"] for ev in events}
     etf_names = {sid: book.listing.get(sid, {}).get("name", sid) for sid in used}
