@@ -9,7 +9,7 @@ const STATUS_CLS: Record<string, string> = {
 
 const pct = (v: number | undefined, signed = true) => {
   if (v == null || Number.isNaN(v)) return '—'
-  const s = (v * 100).toFixed(1) + '%'
+  const s = (v * 100).toFixed(2) + '%'
   return signed && v > 0 ? '+' + s : s
 }
 

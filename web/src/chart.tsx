@@ -284,7 +284,7 @@ export function NavChart(props: NavChartProps) {
             `<div class="ek-kv"><span>组合（自区间起点）</span><b>${((nav[i] - 1) * 100).toFixed(2)}%</b></div>`,
             `<div class="ek-kv"><span>${props.benchName || '基准'}</span><b>${((bench[i] - 1) * 100).toFixed(2)}%</b></div>`,
             inv != null
-              ? `<div class="ek-kv"><span>当日仓位</span><b>${(inv * 100).toFixed(0)}%${
+              ? `<div class="ek-kv"><span>当日仓位</span><b>${(inv * 100).toFixed(2)}%${
                 holdings[i] != null ? ` · 持仓 ${holdings[i]}/${maxHoldings} 只` : ''}</b></div>`
               : '',
           ].join('')

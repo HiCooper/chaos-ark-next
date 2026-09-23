@@ -160,7 +160,7 @@ export default function Engine({ data, today }: { data: any; today: any }) {
                 <tr key={k}>
                   <td>{k} 个交易日</td>
                   <td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                  <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 0, false)}</td>
+                  <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
                   <td className="num" style={{ textAlign: 'right', color: v.avg_excess >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td>
                 </tr>
               ))}

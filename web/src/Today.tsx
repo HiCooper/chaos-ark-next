@@ -109,7 +109,7 @@ function PickCard({ p }: { p: any }) {
         )}
         {hz.win_rate !== undefined && hz.win_rate !== null && (
           <div className="small">
-            相似样本：胜率 <b className="num">{pct(hz.win_rate, 0, false)}</b>
+            相似样本：胜率 <b className="num">{pct(hz.win_rate, 2, false)}</b>
             {' · '}平均超额{' '}
             <b className="num" style={{ color: (hz.mean_excess || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
               {pct(hz.mean_excess)}
@@ -138,7 +138,7 @@ function PickCard({ p }: { p: any }) {
                   <tr key={H} className={on ? 'on' : ''}>
                     <td>{H} 日{on ? ' ★' : ''}</td>
                     <td className={`num ${s.excess >= 0 ? 'up' : 'down'}`}>{pct(s.excess)}</td>
-                    <td className="num">{pct(s.win, 0, false)}</td>
+                    <td className="num">{pct(s.win, 2, false)}</td>
                     <td className="num down">{pct(s.dd)}</td>
                     <td className="num muted">{s.samples ?? '—'}</td>
                   </tr>
@@ -405,7 +405,7 @@ export default function Today({ data }: { data: any }) {
                 ))}
               </div>
               <div style={{ minWidth: 190 }} className="small muted">
-                <div>行业 20 日上涨占比 <b className="num">{pct(ri.breadth20, 0, false)}</b></div>
+                <div>行业 20 日上涨占比 <b className="num">{pct(ri.breadth20, 2, false)}</b></div>
                 <div>行业中位数 20 日 <b className="num">{pct(ri.median_ret20)}</b></div>
                 <div>基准 20/60 日 <b className="num">{pct(ri.bench_ret20)}</b> · 回撤 <b className="num">{pct(ri.bench_dd60)}</b></div>
                 <div>波动历史分位 <b className="num">{num(ri.vol_pct, 2)}</b></div>

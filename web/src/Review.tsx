@@ -202,7 +202,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           ? (hs.length ? `建议持有周期 ${hs.join(' / ')} 个交易日` : undefined)
           : (reasons.length ? `卖出原因：${reasons.join('；')}` : undefined),
         pos: (inv != null && !Number.isNaN(inv))
-          ? `${pct(inv, 0, false)}（持仓 ${posHoldings[i0] ?? '—'}/${posMax} 只）`
+          ? `${pct(inv, 2, false)}（持仓 ${posHoldings[i0] ?? '—'}/${posMax} 只）`
           : undefined,
         lines: (() => {
           // 同一天可能有多条结论落到同一只 ETF（不同细分赛道共用代理标的），
@@ -302,14 +302,14 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           <Metric k={`年化收益（${sts.years || '—'} 年）`} v={pct(sts.cagr)}
             n={`基准 ${pct(sts.bench_cagr)} · 年化超额 ${pct(sts.excess_cagr)}`}
             tone={(sts.excess_cagr || 0) >= 0 ? 'up' : 'down'} />
-          <Metric k="最大回撤" v={pct(sts.maxdd, 1, false)}
-            n={`基准 ${pct(sts.bench_maxdd, 1, false)} · 最长水下 ${sts.max_underwater_days || '—'} 日`}
+          <Metric k="最大回撤" v={pct(sts.maxdd, 2, false)}
+            n={`基准 ${pct(sts.bench_maxdd, 2, false)} · 最长水下 ${sts.max_underwater_days || '—'} 日`}
             tone="down" />
-          <Metric k="方向判断胜率" v={pct(st.win_rate_excess, 1, false)}
-            n={`跑赢基准口径 · 绝对盈利胜率 ${pct(st.win_rate_abs, 1, false)}`}
+          <Metric k="方向判断胜率" v={pct(st.win_rate_excess, 2, false)}
+            n={`跑赢基准口径 · 绝对盈利胜率 ${pct(st.win_rate_abs, 2, false)}`}
             tone={(st.win_rate_excess || 0) >= 0.5 ? 'up' : undefined} />
           <Metric k="Calmar / 夏普" v={`${num(sts.calmar, 2)} / ${num(sts.sharpe, 2)}`}
-            n={`月度胜率 ${pct(sts.monthly_win_rate, 0, false)} · 波动 ${pct(sts.vol, 1, false)}`} />
+            n={`月度胜率 ${pct(sts.monthly_win_rate, 2, false)} · 波动 ${pct(sts.vol, 2, false)}`} />
         </div>
 
         <div className="grid g4" style={{ marginBottom: 12 }}>
@@ -352,12 +352,12 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                     {floorScan.map((r: any) => (
                       <tr key={r.floor}
                         className={Math.abs(r.floor - (rc.config?.vol_floor ?? 0.8)) < 1e-9 ? 'hl' : ''}>
-                        <td>{pct(r.floor, 0, false)}</td>
+                        <td>{pct(r.floor, 2, false)}</td>
                         <td className="num">{pct(r.eff_cagr)}</td>
-                        <td className="num">{pct(r.eff_maxdd, 1, false)}</td>
+                        <td className="num">{pct(r.eff_maxdd, 2, false)}</td>
                         <td className="num">{num(r.eff_sharpe)}</td>
                         <td className="num">{r.eff_underwater}</td>
-                        <td className="num">{pct(r.avg_exposure, 0, false)}</td>
+                        <td className="num">{pct(r.avg_exposure, 2, false)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -383,9 +383,9 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                       <tr key={String(r.cap)} className={r.cap == null ? 'hl' : ''}>
                         <td>{r.cap == null ? '不限制（当前）' : `≤ ${r.cap}`}</td>
                         <td className="num">{pct(r.cagr)}</td>
-                        <td className="num">{pct(r.maxdd, 1, false)}</td>
+                        <td className="num">{pct(r.maxdd, 2, false)}</td>
                         <td className="num">{num(r.sharpe)}</td>
-                        <td className="num">{pct(r.win_excess, 1, false)}</td>
+                        <td className="num">{pct(r.win_excess, 2, false)}</td>
                         <td className="num">{r.n}</td>
                         <td className="num">{r.blocked ?? '—'}</td>
                       </tr>
@@ -408,7 +408,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                 <>
                   <br />
                   <b>运行期口径</b>（2019 年 ETF 数据可用起，剔除前期空仓期）：
-                  年化 <b>{pct(eff.cagr)}</b>，最大回撤 <b>{pct(eff.maxdd, 1, false)}</b>，
+                  年化 <b>{pct(eff.cagr)}</b>，最大回撤 <b>{pct(eff.maxdd, 2, false)}</b>，
                   夏普 <b>{num(eff.sharpe)}</b>。
                 </>
               )}
@@ -423,14 +423,14 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             <b>与信号口径的区别</b>：方向判断本身用行业指数衡量（不可交易），
             收益一律用真实 ETF 衡量。资金曲线的仓位规则是：
             持仓按 1/σ 分配风险预算（σ 取 60 日已实现波动），组合已实现波动高于
-            {pct(rc.config?.vol_target ?? 0.16, 0, false)} 时按比例降仓、最低不低于
-            {pct(rc.config?.vol_floor ?? 0.8, 0, false)}，未投入部分计现金收益。
+            {pct(rc.config?.vol_target ?? 0.16, 2, false)} 时按比例降仓、最低不低于
+            {pct(rc.config?.vol_floor ?? 0.8, 2, false)}，未投入部分计现金收益。
             这套风控只改权重与总暴露，不改任何一笔买卖的时点与标的。
           </div>
         )}
 
         <div className="note" style={{ marginBottom: 12 }}>
-          <b>怎么读这组数字</b>：胜率 {pct(st.win_rate_excess, 1, false)}（跑赢基准）低于一半，
+          <b>怎么读这组数字</b>：胜率 {pct(st.win_rate_excess, 2, false)}（跑赢基准）低于一半，
           但年化 {pct(sts.cagr)} 高于基准的 {pct(sts.bench_cagr)} ——
           这说明收益不是靠「猜对次数多」，而是靠少数判断错得少、对得多的不对称分布
           （单笔平均 {pct(st.avg_ret)}、平均超额 {pct(st.avg_excess)}）。
@@ -619,7 +619,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                     <td className="num">{b.date}</td>
                     <td><b>{b.name}</b> <span className="muted num">{b.code}</span></td>
                     <td className="num" style={{ textAlign: 'right', color: (b.raw_ret ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
-                      {pct(b.raw_ret, 1)}
+                      {pct(b.raw_ret, 2)}
                     </td>
                     <td className="num" style={{ textAlign: 'right' }}>{pct(b.ref_ret, 2)}</td>
                     <td className="muted" style={{ fontSize: 11.5 }}>
@@ -656,7 +656,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                 <td><b>A · 固定持有到建议周期</b><div className="small muted">当前主口径</div></td>
                 <td className="num" style={{ textAlign: 'right' }}>{pct(sts.cagr)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>{pct(sts.total_return)}</td>
-                <td className="num" style={{ textAlign: 'right' }}>{pct(sts.maxdd, 1, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(sts.maxdd, 2, false)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>{num(sts.sharpe, 2)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>{num(sts.calmar, 2)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>{sts.executed_trades ?? '—'}</td>
@@ -666,7 +666,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                   <td>B · 执行失效条件<div className="small muted">连续 3 日跌破 MA20 即退出</div></td>
                   <td className="num" style={{ textAlign: 'right' }}>{pct(st.early_exit.stats?.cagr)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{pct(st.early_exit.stats?.total_return)}</td>
-                  <td className="num" style={{ textAlign: 'right' }}>{pct(st.early_exit.stats?.maxdd, 1, false)}</td>
+                  <td className="num" style={{ textAlign: 'right' }}>{pct(st.early_exit.stats?.maxdd, 2, false)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{num(st.early_exit.stats?.sharpe, 2)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{num(st.early_exit.stats?.calmar, 2)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{st.early_exit.n ?? '—'}</td>
@@ -677,7 +677,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                   <td>C · 市场趋势门控<div className="small muted">基准 ETF 站上 MA200 才建仓</div></td>
                   <td className="num" style={{ textAlign: 'right' }}>{pct(st.gated.stats?.cagr)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{pct(st.gated.stats?.total_return)}</td>
-                  <td className="num" style={{ textAlign: 'right' }}>{pct(st.gated.stats?.maxdd, 1, false)}</td>
+                  <td className="num" style={{ textAlign: 'right' }}>{pct(st.gated.stats?.maxdd, 2, false)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{num(st.gated.stats?.sharpe, 2)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{num(st.gated.stats?.calmar, 2)}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{st.gated.stats?.executed_trades ?? '—'}</td>
@@ -687,7 +687,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                 <td>基准<div className="small muted">{st.bench_etf || '沪深300ETF'}</div></td>
                 <td className="num" style={{ textAlign: 'right' }}>{pct(sts.bench_cagr)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>{pct(sts.bench_total)}</td>
-                <td className="num" style={{ textAlign: 'right' }}>{pct(sts.bench_maxdd, 1, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(sts.bench_maxdd, 2, false)}</td>
                 <td className="num" style={{ textAlign: 'right' }}>—</td>
                 <td className="num" style={{ textAlign: 'right' }}>—</td>
                 <td className="num" style={{ textAlign: 'right' }}>—</td>
@@ -696,11 +696,11 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           </table>
           <div className="note" style={{ marginTop: 8 }}>
             <b>这是一次失败的改进尝试，如实记录：</b>
-            {' '}B 口径（连续 3 日跌破 MA20 就止损）触发率 {pct(st.early_exit?.exit_share, 0, false)}、
+            {' '}B 口径（连续 3 日跌破 MA20 就止损）触发率 {pct(st.early_exit?.exit_share, 2, false)}、
             平均只持有 {st.early_exit?.avg_held_days ?? '—'} 个交易日就把仓位洗光，
-            年化反而降到 {pct(st.early_exit?.stats?.cagr)}、回撤扩大到 {pct(st.early_exit?.stats?.maxdd, 1, false)}；
+            年化反而降到 {pct(st.early_exit?.stats?.cagr)}、回撤扩大到 {pct(st.early_exit?.stats?.maxdd, 2, false)}；
             C 口径（等基准站上 MA200 再动手）同样跑输，年化 {pct(st.gated?.stats?.cagr)}、
-            回撤 {pct(st.gated?.stats?.maxdd, 1, false)}。
+            回撤 {pct(st.gated?.stats?.maxdd, 2, false)}。
             原因不神秘：行业 ETF 波动远大于宽基，均线类止损在 60-100 日的持有周期里几乎必然被噪音打穿；
             而 A 股的趋势拐点往往先于宽基均线信号，等门控打开时最肥的一段已经走完。
             <b>结论：不加这两条「看起来合理」的规则，反而更好。</b>
@@ -730,10 +730,10 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                   </td>
                   <td className="num small">{p.start} → {p.end}</td>
                   <td className="num" style={{ textAlign: 'right' }}>{p.n}</td>
-                  <td className="num" style={{ textAlign: 'right' }}>{pct(p.win_rate, 0, false)}</td>
+                  <td className="num" style={{ textAlign: 'right' }}>{pct(p.win_rate, 2, false)}</td>
                   <td className="num" style={{ textAlign: 'right', color: (p.avg_ret || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(p.avg_ret)}</td>
                   <td className="num" style={{ textAlign: 'right', color: (p.avg_excess || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(p.avg_excess)}</td>
-                  <td className="num" style={{ textAlign: 'right' }}>{pct(p.avg_maxdd, 1, false)}</td>
+                  <td className="num" style={{ textAlign: 'right' }}>{pct(p.avg_maxdd, 2, false)}</td>
                 </tr>
               ))}
             </tbody>
@@ -755,7 +755,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                   <tr key={y}>
                     <td>{y}</td>
                     <td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                    <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 0, false)}</td>
+                    <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
                     <td className="num" style={{ textAlign: 'right', color: (v.avg_ret || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_ret)}</td>
                     <td className="num" style={{ textAlign: 'right', color: (v.avg_excess || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td>
                   </tr>
@@ -793,7 +793,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           <div style={{ marginTop: 10 }}>
             {wrong.slice(0, 4).map((w: any, i: number) => (
               <div key={i} className="small" style={{ marginBottom: 3, color: 'var(--ink-2)' }}>
-                <b>{w.code}</b> · {w.label}（占错误 {pct(w.share, 0, false)}）
+                <b>{w.code}</b> · {w.label}（占错误 {pct(w.share, 2, false)}）
               </div>
             ))}
           </div>
@@ -830,7 +830,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                 {it.evidence.buckets.map((b: any, j: number) => (
                   <span className="bucket" key={j}>
                     {b.bucket} · n={b.n}
-                    {b.win_rate !== undefined ? ` · 胜率 ${pct(b.win_rate, 0, false)} · 超额 ${pct(b.avg_excess)}` : ''}
+                    {b.win_rate !== undefined ? ` · 胜率 ${pct(b.win_rate, 2, false)} · 超额 ${pct(b.avg_excess)}` : ''}
                   </span>
                 ))}
               </div>
@@ -888,7 +888,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
         extra={<span className="muted">仅用于评估信号质量本身</span>}>
         <div className="grid g4" style={{ marginBottom: 10 }}>
           <Metric k="已验证结论" v={`${o.evaluated || 0}`} n={`另有 ${o.pending || 0} 条持有中未到期`} />
-          <Metric k="方向判断胜率" v={pct(o.win_rate, 1, false)}
+          <Metric k="方向判断胜率" v={pct(o.win_rate, 2, false)}
             n={`对 ${o.right || 0} / 错 ${o.wrong || 0} / 中性 ${o.neutral || 0}`}
             tone={(o.win_rate || 0) >= 0.5 ? 'up' : undefined} />
           <Metric k="平均超额收益" v={pct(o.avg_excess)}
@@ -901,17 +901,17 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           <tbody>
             {Object.entries(o.by_horizon || {}).map(([k, v]: any) => (
               <tr key={`h${k}`}><td>持有 {k} 日</td><td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 0, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
                 <td className="num" style={{ textAlign: 'right', color: v.avg_excess >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td></tr>
             ))}
             {Object.entries(o.by_regime || {}).map(([k, v]: any) => (
               <tr key={`r${k}`}><td>环境 {REGIME_TXT[k] || k}</td><td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 0, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
                 <td className="num" style={{ textAlign: 'right', color: v.avg_excess >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td></tr>
             ))}
             {Object.entries(o.by_action || {}).map(([k, v]: any) => (
               <tr key={`a${k}`}><td>{ACT_TXT[k] || k}</td><td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 0, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
                 <td className="num" style={{ textAlign: 'right', color: v.avg_excess >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td></tr>
             ))}
           </tbody>

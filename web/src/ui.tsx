@@ -1,6 +1,6 @@
 import React from 'react'
 
-export function pct(x: number | null | undefined, nd = 1, sign = true): string {
+export function pct(x: number | null | undefined, nd = 2, sign = true): string {
   if (x === null || x === undefined || Number.isNaN(x)) return '—'
   const v = x * 100
   return `${sign && v > 0 ? '+' : ''}${v.toFixed(nd)}%`

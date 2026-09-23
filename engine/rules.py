@@ -38,7 +38,7 @@ def _num(x, nd: int = 2) -> str:
     return str(x)
 
 
-def _pct(x, nd: int = 1, signed: bool = False) -> str:
+def _pct(x, nd: int = 2, signed: bool = False) -> str:
     if x is None:
         return "—"
     s = f"{x*100:+.{nd}f}%" if signed else f"{x*100:.{nd}f}%"
@@ -87,7 +87,7 @@ def build_rules(settlement: Optional[dict] = None,
         _item("硬回避：主线分", f"< {_num(30)} 分",
               "engine/classify.py · 硬回避（主线通道）",
               "长期趋势处于下降通道（120/250 日动量为负）——下跌趋势中的反弹不参与。"),
-        _item("硬回避：高于 MA250", f"> {_pct(0.45, 0, True)}",
+        _item("硬回避：高于 MA250", f"> {_pct(0.45, 2, True)}",
               "engine/classify.py · 硬回避（长期超涨）",
               "长期超涨。复盘显示「追高」是首要失误来源。"),
         _item("硬回避：风险分", f"< {_num(22)} 分",
@@ -101,7 +101,7 @@ def build_rules(settlement: Optional[dict] = None,
     # ---------------------------------------------------- 2 结论前置过滤
     n_dem = cf.get("n_demoted")
     filt_items = [
-        _item("120 日相对行业等权超额", f"≥ {_pct(flt['rs120_min'], 0)}（不为负）",
+        _item("120 日相对行业等权超额", f"≥ {_pct(flt['rs120_min'], 2)}（不为负）",
               "config.CONCLUSION_FILTER.rs120_min",
               "结论自带的失效条件已写明「超额转负即作废」，事前仍给建仓等于自相矛盾。"
               "实测被剔除的这类结论胜率仅 4.8%、平均超额 −7.91%。"),
@@ -152,10 +152,10 @@ def build_rules(settlement: Optional[dict] = None,
         _item("σ 估计窗口", f"{rc['rp_window']} 个交易日",
               "config.RISK_CONTROL.rp_window",
               "单标的历史已实现波动，用作 1/σ 权重与组合波动估计。"),
-        _item("组合目标年化波动", _pct(rc["vol_target"], 0),
+        _item("组合目标年化波动", _pct(rc["vol_target"], 2),
               "config.RISK_CONTROL.vol_target",
               "波动目标：已实现波动高于该值时按比例降暴露，是唯一「降回撤不牺牲年化」的机制。"),
-        _item("暴露下限", f"{_pct(rc['vol_floor'], 0)}",
+        _item("暴露下限", f"{_pct(rc['vol_floor'], 2)}",
               "config.RISK_CONTROL.vol_floor",
               "仓位不得低于此值。这是回撤与年化之间的调节旋钮，敏感性曲线见复盘的取舍表。"),
         _item("暴露上限（F5）",
@@ -166,7 +166,7 @@ def build_rules(settlement: Optional[dict] = None,
               "（任一好转即释放）。全部无前视，不改买卖时点。"
               "全周期：年化 10.49% → 11.70%、回撤 −35.8% → −25.5%、2022 转正；"
               "代价：2023/2026 阴跌段年化让约 1~2.6pp。"),
-        _item("未投入部分收益", f"{_pct(rc['cash_yield'], 1)} / 年",
+        _item("未投入部分收益", f"{_pct(rc['cash_yield'], 2)} / 年",
               "config.RISK_CONTROL.cash_yield",
               "闲置资金按货币基金口径计息，避免低估空仓期的机会成本。"),
         _item("不变式", "不改变任何一笔买卖的时点与标的",
@@ -223,7 +223,7 @@ def build_rules(settlement: Optional[dict] = None,
               f"α={_num(RG.EMA_ALPHA)} 指数平滑 + 连续 {RG.REGIME_CONFIRM_DAYS} 日确认",
               "regime.EMA_ALPHA / REGIME_CONFIRM_DAYS",
               "避免日频抖动导致的档位反复切换（等效约 3 日 EMA）。"),
-        _item("恐慌强制覆盖", f"基准 60 日回撤 < {_pct(C.REGIME_RULES['bench_dd_panic'], 0, True)} → 恐慌",
+        _item("恐慌强制覆盖", f"基准 60 日回撤 < {_pct(C.REGIME_RULES['bench_dd_panic'], 2, True)} → 恐慌",
               "config.REGIME_RULES.bench_dd_panic",
               f"波动率历史分位 > {_num(C.REGIME_RULES['vol_pct_panic'])} 时额外从进攻/中性降级为防守。"),
         _item("环境热度构成", "宽度 0.32 · 趋势 0.24 · 动能 0.24 · 低波 · 流动性",
@@ -248,12 +248,12 @@ def build_rules(settlement: Optional[dict] = None,
         _item("ETF 份额折算复权", "已启用" if C.ETF_QFQ else "未启用",
               "config.ETF_QFQ",
               "ETF 拆分/合并会让单位价格按整数倍跳变而持有人价值不变。结算取价时"
-              f"检测这类断点（偏离参照收益超 {_pct(C.QFQ_BREAK_THRESH, 0, True)}）并按参照还原，"
+              f"检测这类断点（偏离参照收益超 {_pct(C.QFQ_BREAK_THRESH, 2, True)}）并按参照还原，"
               "价值中性事件不记为盈亏；L0 原始数据不动。"),
-        _item("「对」的判定线", f"相对基准超额 ≥ {_pct(rv['outperf_win'], 0, True)}",
+        _item("「对」的判定线", f"相对基准超额 ≥ {_pct(rv['outperf_win'], 2, True)}",
               "config.REVIEW.outperf_win",
               "结论评估的胜率口径：跑赢主基准（沪深300）超过该幅度记为「对」。"),
-        _item("「错」的判定线", f"相对基准超额 ≤ {_pct(rv['outperf_loss'], 0, True)}",
+        _item("「错」的判定线", f"相对基准超额 ≤ {_pct(rv['outperf_loss'], 2, True)}",
               "config.REVIEW.outperf_loss",
               "跑输超过该幅度记为「错」，两者之间记为「中性」。"),
         _item("前瞻检验网格", " / ".join(str(x) for x in rv["lookahead_grids"]) + " 个交易日",

@@ -142,18 +142,6 @@ export function EtfModal(props: EtfModalInput) {
     }
   }, [trades])
 
-  // 在途持仓：B 事件没有任何 S 事件与之配对（S.bd = 买入日）
-  const openPos = useMemo(() => {
-    const soldBd = new Set(events.filter((e) => e.k === 'S').map((e) => e.bd))
-    return events.filter((e) => e.k === 'B' && e.date && !soldBd.has(e.date))
-  }, [events])
-
-  // ETF 自身「到目前为止」的累计涨跌（复权口径，数据起点 → 最新交易日）
-  const etfTotal = useMemo(
-    () => (data ? seriesTotal(data.adj, data.dates) : null),
-    [data],
-  )
-
   // 最新复权价（在途持仓估值用）
   const lastAdj = useMemo(() => {
     if (!data) return null
@@ -162,6 +150,33 @@ export function EtfModal(props: EtfModalInput) {
     }
     return null
   }, [data])
+
+  // 在途持仓：B 事件没有任何 S 事件与之配对（S.bd = 买入日）。聚合为一张卡展示。
+  const openPos = useMemo(() => {
+    const soldBd = new Set(events.filter((e) => e.k === 'S').map((e) => e.bd))
+    return events.filter((e) => e.k === 'B' && e.date && !soldBd.has(e.date))
+  }, [events])
+  const openPosAgg = useMemo(() => {
+    if (!openPos.length || !lastAdj) return null
+    const fls = openPos
+      .map((e) => (e.price ? lastAdj.v / e.price - 1 : null))
+      .filter((f): f is number => f != null)
+    if (!fls.length) return null
+    const dates = openPos.map((e) => e.date!).sort()
+    return {
+      n: fls.length,
+      avg: fls.reduce((a, b) => a + b, 0) / fls.length,
+      pnl: fls.reduce((a, f) => a + f * NOTIONAL, 0),
+      from: dates[0],
+      to: dates[dates.length - 1],
+    }
+  }, [openPos, lastAdj])
+
+  // ETF 自身「到目前为止」的累计涨跌（复权口径，数据起点 → 最新交易日）
+  const etfTotal = useMemo(
+    () => (data ? seriesTotal(data.adj, data.dates) : null),
+    [data],
+  )
 
   // ---- echarts ----
   const navIdxOf: Record<string, number> = useMemo(() => {
@@ -232,7 +247,7 @@ export function EtfModal(props: EtfModalInput) {
           const brk = brkByDate[date]
           if (brk) {
             html += `<div class="ek-sec">份额折算日 ⚠</div>`
-            html += tipKV('原始价格跳变', `${(brk.raw_ret * 100).toFixed(1)}%`)
+            html += tipKV('原始价格跳变', `${(brk.raw_ret * 100).toFixed(2)}%`)
             html += tipKV('参照真实收益', `${(brk.ref_ret * 100).toFixed(2)}%（${REF_TXT[brk.ref_src] || brk.ref_src}）`)
             html += tipKV('复权因子', `×${brk.factor.toFixed(4)}`)
             html += `<div class="ek-mute">价值中性事件：持有人份额×价格不变，不应记为盈亏。</div>`
@@ -247,7 +262,7 @@ export function EtfModal(props: EtfModalInput) {
               html += tipKV('净收益率（扣双边成本）', e.ret != null ? pct(e.ret, 2) : '—')
               html += tipKV('相对基准超额', e.ex != null ? pct(e.ex, 2) : '—')
             }
-            if (e.w != null) html += tipKV('组合权重 w', `${(e.w * 100).toFixed(1)}%`)
+            if (e.w != null) html += tipKV('组合权重 w', `${(e.w * 100).toFixed(2)}%`)
             if (isB && e.h) html += tipKV('建议周期', `${e.h} 个交易日`)
             if (isB && e.sc != null) html += tipKV('综合分', String(e.sc))
             if (!isB && e.why) html += `<div class="ek-mute">卖出原因：${e.why}</div>`
@@ -336,7 +351,7 @@ export function EtfModal(props: EtfModalInput) {
             {etfTotal && (
               <div className="estat">
                 <div className="l">ETF 累计涨跌（复权）</div>
-                <div className={`v num ${etfTotal.pct >= 0 ? 'up' : 'down'}`}>{pct(etfTotal.pct, 1)}</div>
+                <div className={`v num ${etfTotal.pct >= 0 ? 'up' : 'down'}`}>{pct(etfTotal.pct, 2)}</div>
                 <div className="m">{etfTotal.from} → {etfTotal.to}（数据起止）</div>
               </div>
             )}
@@ -347,22 +362,22 @@ export function EtfModal(props: EtfModalInput) {
                   {settled.pnl >= 0 ? '+' : ''}{settled.pnl.toFixed(0)} 元
                 </div>
                 <div className="m">
-                  胜率 {pct(settled.winRate, 0, false)} · 单笔平均 {pct(settled.avg, 2)} · 名义 1 万/笔
+                  胜率 {pct(settled.winRate, 2, false)} · 单笔平均 {pct(settled.avg, 2)} · 名义 1 万/笔
                 </div>
               </div>
             )}
-            {openPos.map((e, i) => {
-              const fl = lastAdj && e.price ? lastAdj.v / e.price - 1 : null
-              return (
-                <div className="estat" key={i}>
-                  <div className="l">在途持仓（{e.date} 买入）</div>
-                  <div className={`v num ${fl != null && fl >= 0 ? 'up' : 'down'}`}>{fl != null ? pct(fl, 2) : '—'}</div>
-                  <div className="m">
-                    买价 {e.price?.toFixed(4)} → 现价（{lastAdj?.d}）{lastAdj?.v.toFixed(4)} · 未扣卖出成本
-                  </div>
+            {openPosAgg && (
+              <div className="estat">
+                <div className="l">在途持仓 · {openPosAgg.n} 笔（未平仓）</div>
+                <div className={`v num ${openPosAgg.pnl >= 0 ? 'up' : 'down'}`}>
+                  {openPosAgg.pnl >= 0 ? '+' : ''}{openPosAgg.pnl.toFixed(0)} 元
                 </div>
-              )
-            })}
+                <div className="m">
+                  平均浮动 {pct(openPosAgg.avg, 2)} · 名义 1 万/笔 · 买入 {openPosAgg.from} ~ {openPosAgg.to} ·
+                  估值截至 {lastAdj?.d} · 未扣卖出成本
+                </div>
+              </div>
+            )}
           </div>
         )}
 
