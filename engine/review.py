@@ -408,7 +408,8 @@ def build_improvements(evals: List[dict]) -> List[dict]:
 
 
 def build_sim_export(book: EtfBook, dates: List[str], trades_exec: List[dict],
-                     buy_plans: dict, RC: dict, PF: dict) -> dict:
+                     buy_plans: dict, RC: dict, PF: dict,
+                     conclusions: Optional[Dict[str, dict]] = None) -> dict:
     """导出「我的持仓」影子账户的全部输入，供前端逐日重放（无前视）。
 
     前端只需要本金 C 与入市起始日 S，用同一份候选、同一份开盘/收盘价重放，
@@ -474,6 +475,32 @@ def build_sim_export(book: EtfBook, dates: List[str], trades_exec: List[dict],
         slot = days.setdefault(t["date"], {"e": round(gate_by_day.get(t["date"], 1.0), 4),
                                            "p": []})
         slot["p"].append(row)
+    # ---- 尾部补充：最后一天的结论 ----
+    # 它的买入日（T+1）在数据之外，因此既不在 trades_exec（open_edge 会跳过），
+    # 也不在结算里；但盘后这一天的结论**正是用户下一交易日要下的单**，
+    # 必须补进 days，否则「我的持仓」在最新交易日会显示"没有候选"。
+    # 口径与 review 的末日计划块一致：σ 用截至最后一天的数据（无前视），到期日待定。
+    if conclusions and cal:
+        _last = cal[-1]
+        slot = days.setdefault(_last, {"e": round(gate_by_day.get(_last, 1.0), 4), "p": []})
+        have = {(r[0], r[1]) for r in slot["p"]}
+        for _p in ((conclusions.get(_last) or {}).get("picks") or []):
+            H = int((_p.get("horizon") or {}).get("horizon") or 0)
+            if H <= 0:
+                continue
+            _sid = book.etf_of(_p["name"], _last)
+            if not _sid and _p.get("etf_code"):
+                _hits = [k for k in book.series if k.split(".")[-1] == str(_p["etf_code"])]
+                _sid = _hits[0] if len(_hits) == 1 else None
+            if not _sid or (_p["name"], _sid) in have:
+                continue
+            _w = plan_w(book, _sid, len(book.dates), _p.get("composite"),
+                        RC["risk_parity"], RC["rp_window"], PF["score_tilt"])
+            sids.add(_sid)
+            slot["p"].append([_p["name"], _sid, round(float(_w), 6),
+                              round(float(_p.get("composite") or 0.0), 2),
+                              None, H, _p.get("action")])
+
     # 排序与实际取用由前端按引擎规则做（综合分降序 → 每日上限 → 空槽 → 现金约束）
     px_o: Dict[str, list] = {}
     px_c: Dict[str, list] = {}
@@ -1001,7 +1028,8 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
             "buy_plans": buy_plans,
             # 「我的持仓」影子账户的完整输入（候选 + 前复权开/收盘价）：
             # 同样由 pipeline 摘出来落成 data/sim.json，前端逐日重放用户的真实账本。
-            "sim_export": build_sim_export(book, dates, trades_exec, buy_plans, RC, PF),
+            "sim_export": build_sim_export(book, dates, trades_exec, buy_plans, RC, PF,
+                                           conclusions=conclusions),
             # 曲线上逐笔成交事件（B/S 点）：与 curve 同一套成交价与成本口径
             "events": pf_etf["events"],
             "etf_names": pf_etf["etf_names"],

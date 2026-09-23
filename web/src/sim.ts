@@ -61,6 +61,8 @@ export type Position = {
   /** 买入时实际付出的现金 */
   amt: number
   endDate: string | null
+  /** 到期日在数据末端之后 → 按周末推算（未计节假日） */
+  endEstimated: boolean
   endI: number
   lastPx: number
   mv: number
@@ -89,11 +91,21 @@ export type PlanRow = {
   lots: number
 }
 
+/** 下一交易日收盘到期的持仓（要卖的单；金额按最新收盘价估算，实际以成交价为准） */
+export type SellPlanRow = {
+  sw: string; sid: string; name: string
+  buyDate: string; buyPx: number; lastPx: number; shares: number; amt: number
+  estProceeds: number; estPnl: number; estRet: number
+  heldDays: number; horizon: number; endDate: string | null; endEstimated: boolean
+}
+
 export type SimResult = {
   startDate: string
   asOf: string
   asOfI: number
+  /** 下一交易日：数据内为真实日期；数据末端之后按周末推算（节假日以交易所公告为准） */
   nextDate: string | null
+  nextDateEstimated: boolean
   window: { d: string; v: number }[]
   capital: number
   cash: number
@@ -110,6 +122,11 @@ export type SimResult = {
   todayBuys: Position[]
   todaySells: SellRow[]
   nextBuys: PlanRow[]
+  /** 排队候选：当前建不了仓（槽位满/现金不足）时的优先级队列与"若有槽位时的预算" */
+  nextQueue: PlanRow[]
+  nextSells: SellPlanRow[]
+  /** 下一交易日没有买入时的原因（用于把"为什么不用动手"说清楚） */
+  nextBlocked: 'no_candidates' | 'no_slots' | 'no_cash' | null
   nBuys: number
   nSells: number
   /** 因现金不足被缩量/跳过的建仓次数（可执行口径的真实约束） */
@@ -127,6 +144,18 @@ export function fetchSim(): Promise<SimData | null> {
       .catch(() => null)
   }
   return cache.data
+}
+
+/** 按周末推算 +n 个工作日（不含节假日；用于数据末端之后的到期日/下一交易日） */
+export function addWeekdays(iso: string, n: number): string {
+  const d = new Date(iso + 'T00:00:00Z')
+  let left = n
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1)
+    const w = d.getUTCDay()
+    if (w !== 0 && w !== 6) left--
+  }
+  return d.toISOString().slice(0, 10)
 }
 
 export function yuan(x: number): string {
@@ -208,6 +237,7 @@ export function runSim(
         cash -= amt
         const eI = p[4] ? (idxOf[p[4]] ?? k + p[5]) : k + p[5]
         const pos: Position = {
+          endEstimated: false,          // 稍后统一补（可能落在数据末端之后）
           sw: p[0], sid, name: nameOf(sid), action: p[6], w: p[2], score: p[3],
           horizon: p[5], buyDate: d, buyI: k, buyPx: px, shares, amt,
           endDate: p[4], endI: eI, lastPx: px, mv: shares * px,
@@ -272,16 +302,39 @@ export function runSim(
     mv += h.mv
   }
   const value = cash + mv
-  const nextDate = asOfI + 1 < dates.length ? dates[asOfI + 1] : null
 
-  // 下一交易日待执行：金额只取决于账户状态与当日结论（不需要未来行情）
+  // ---- 到期日：数据内有真实日期；落在数据末端之后按周末推算（标 ~）----
+  const lastI = dates.length - 1
+  const matDate = (endI: number, real: string | null): [string | null, boolean] => {
+    if (real && idxOf[real] !== undefined) return [real, false]
+    if (endI <= lastI) return [dates[endI], false]
+    return [addWeekdays(dates[lastI], endI - lastI), true]
+  }
+  for (const h of holdings) {
+    const [dd, est] = matDate(h.endI, h.endDate)
+    h.endDate = dd
+    h.endEstimated = est
+  }
+
+  // ---- 「下一交易日我要下的单」：买入 + 卖出，一眼看清今天要做什么 ----
+  // 两种情形用同一套规则（信号都取 dates[asOfI]）：
+  //   · 选中日在数据中段 → 下一交易日是数据里的真实日期；
+  //   · 选中日就是最新交易日 → 数据里没有"明天"，按周末推算日期（这正是最常用的情形）。
+  // 金额只取决于账户状态与当日结论（不猜测未来行情），所以盘后就能把单子定下来。
+  const rawNext = asOfI + 1 < dates.length ? dates[asOfI + 1] : null
+  const nextDate = rawNext ?? addWeekdays(dates[asOfI], 1)
+  const nextDateEstimated = rawNext === null
   const nextBuys: PlanRow[] = []
-  if (nextDate) {
+  const nextQueue: PlanRow[] = []
+  const nextSells: SellPlanRow[] = []
+  let nextBlocked: 'no_candidates' | 'no_slots' | 'no_cash' | null = null
+  {
     const day = sim.days[dates[asOfI]]
     const expo = day ? day.e : 1.0
-    let adds = day ? [...day.p].sort((a, b) => b[3] - a[3]).slice(0, maxNew) : []
-    const slotsFree = Math.max(0, sim.max_holdings - holdings.length)
-    adds = adds.slice(0, slotsFree)
+    const cands = day ? day.p.length : 0
+    const prio = day ? [...day.p].sort((a, b) => b[3] - a[3]).slice(0, maxNew) : []
+    const room = Math.max(0, sim.max_holdings - holdings.length)
+    const adds = prio.slice(0, room)
     if (adds.length) {
       const ws = holdings.map((h) => h.w).concat(adds.map((p) => p[2]))
       const wbar = ws.length ? ws.reduce((a, b) => a + b, 0) / ws.length : 1
@@ -297,15 +350,47 @@ export function runSim(
         })
       }
     }
+    if (cands === 0) nextBlocked = 'no_candidates'
+    else if (room === 0) nextBlocked = 'no_slots'
+    else if (nextBuys.length === 0) nextBlocked = 'no_cash'
+    // 建不了仓时，把"排队顺序"摆出来：槽位或现金一释放，系统就按综合分从高到低建仓
+    if (nextBuys.length === 0 && prio.length) {
+      const ws2 = holdings.map((h) => h.w).concat(prio.map((p) => p[2]))
+      const wbar2 = ws2.length ? ws2.reduce((a, b) => a + b, 0) / ws2.length : 1
+      for (const p of prio) {
+        const budget = (value * expo * (p[2] / wbar2)) / K
+        const px = closeOf(p[1], asOfI) ?? openOf(p[1], asOfI)
+        nextQueue.push({
+          sw: p[0], sid: p[1], name: nameOf(p[1]), action: p[6], w: p[2], score: p[3],
+          horizon: p[5], amount: budget, cashCut: 0,
+          lots: px ? Math.floor(budget / px / 100) : 0,
+        })
+      }
+    }
+    // 下一交易日收盘到期的持仓（当天收盘卖出；参考金额按最新收盘价估算）
+    for (const h of holdings) {
+      if (h.endI !== asOfI + 1) continue
+      const px = closeOf(h.sid, asOfI) ?? h.lastPx
+      nextSells.push({
+        sw: h.sw, sid: h.sid, name: h.name, buyDate: h.buyDate, buyPx: h.buyPx,
+        lastPx: px, shares: h.shares, amt: h.amt,
+        estProceeds: h.shares * px - h.amt * COST,
+        estPnl: h.shares * px - h.amt * (1 + COST),
+        estRet: h.buyPx > 0 ? px / h.buyPx - 1 - COST : 0,
+        heldDays: asOfI - h.buyI, horizon: h.horizon,
+        endDate: nextDate, endEstimated: nextDateEstimated,
+      })
+    }
   }
 
   return {
-    startDate: dates[Math.max(0, startK - 1)], asOf: dates[asOfI], asOfI, nextDate, window,
+    startDate: dates[Math.max(0, startK - 1)], asOf: dates[asOfI], asOfI,
+    nextDate, nextDateEstimated, window,
     capital, cash, mv, value, totalPnl: value - capital,
     floatPnl: mv - holdings.reduce((a, h) => a + h.amt, 0),
     realised, fees, peak, maxdd,
     exposure: value > 0 ? mv / value : 0,
-    positions: holdings, todayBuys, todaySells, nextBuys,
+    positions: holdings, todayBuys, todaySells, nextBuys, nextQueue, nextSells, nextBlocked,
     nBuys, nSells, cashBlocked, slotBlocked,
   }
 }
