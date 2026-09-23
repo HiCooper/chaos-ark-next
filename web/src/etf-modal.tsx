@@ -209,13 +209,15 @@ export function EtfModal(props: EtfModalInput) {
     const brkPts = data.breaks.filter((b) => idxOf[b.date] !== undefined)
       .map((b) => ({ value: [b.date, data.adj[idxOf[b.date]]], date: b.date }))
 
-    // 初始视窗：focusDate 为主，否则第一处折算日，否则全区间
-    const fi = focusDate && idxOf[focusDate] !== undefined ? idxOf[focusDate]
-      : data.breaks.length && idxOf[data.breaks[0].date] !== undefined ? idxOf[data.breaks[0].date]
-        : null
+    // 初始视窗：focusDate（复盘页点击定位）为主；否则默认看最新时间段
+    // （末端往前 W 个交易日）——不落到第一处折算日，避免默认打开是历史段
+    const nD = data.dates.length
+    const fi = focusDate && idxOf[focusDate] !== undefined ? idxOf[focusDate] : null
     const W = 240
-    const z0 = fi == null ? 0 : Math.max(0, fi - W) / (data.dates.length - 1) * 100
-    const z1 = fi == null ? 100 : Math.min(data.dates.length - 1, fi + W) / (data.dates.length - 1) * 100
+    const z0 = fi == null
+      ? Math.max(0, nD - 1 - W) / (nD - 1) * 100
+      : Math.max(0, fi - W) / (nD - 1) * 100
+    const z1 = fi == null ? 100 : Math.min(nD - 1, fi + W) / (nD - 1) * 100
 
     const tipKV = (k: string, v: string) => `<div class="ek-kv"><span>${k}</span><b>${v}</b></div>`
 
