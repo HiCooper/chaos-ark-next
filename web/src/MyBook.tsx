@@ -101,7 +101,10 @@ export default function MyBook({ data, days, selected, onSelect }: {
         }
       }
     }
-    return [...m.values()].sort((a, b) => b.mv - a.mv)
+    // 与逐笔表一致：最近建仓的排前面；同日建仓按市值大者优先
+    return [...m.values()].sort((a, b) => (a.lastBuy === b.lastBuy
+      ? b.mv - a.mv
+      : (a.lastBuy < b.lastBuy ? 1 : -1)))
   }, [acct])
 
   const EtfCell = ({ sid, d }: { sid: string; d?: string }) => (
@@ -296,7 +299,9 @@ export default function MyBook({ data, days, selected, onSelect }: {
                   </tr>
                 </thead>
                 <tbody>
-                  {acct.nextSells.map((s, i) => (
+                  {[...acct.nextSells].sort((a, b) => (a.buyDate === b.buyDate
+                    ? b.amt - a.amt
+                    : (a.buyDate < b.buyDate ? 1 : -1))).map((s, i) => (
                     <tr key={i}>
                       <td><EtfCell sid={s.sid} d={s.endDate || undefined} /></td>
                       <td className="muted">{s.sw}</td>
@@ -337,7 +342,7 @@ export default function MyBook({ data, days, selected, onSelect }: {
             {/* ============ ③ 当前持仓 ============ */}
             <div className="colhead" style={{ marginBottom: 6 }}>
               <h2 style={{ fontSize: 15 }}>当前持仓（{acct.positions.length} 笔）</h2>
-              <span className="n">按 {date} 收盘价盯市 · 成本 = 买入时实际付出的现金</span>
+              <span className="n">按 {date} 收盘价盯市 · <b>买入日倒序</b> · 成本 = 买入时实际付出的现金</span>
               <button className="linkbtn" style={{ marginLeft: 'auto' }} onClick={() => setByEtf(!byEtf)}>
                 {byEtf ? '按笔查看' : '按 ETF 汇总'}
               </button>
@@ -360,6 +365,7 @@ export default function MyBook({ data, days, selected, onSelect }: {
                           <th style={{ textAlign: 'right' }}>浮动盈亏</th>
                           <th style={{ textAlign: 'right' }}>占比</th>
                           <th>最早建仓</th>
+                          <th>最近建仓</th>
                           <th>最近到期</th>
                         </tr>
                       </thead>
@@ -375,7 +381,8 @@ export default function MyBook({ data, days, selected, onSelect }: {
                               {g.pnl >= 0 ? '+' : ''}{yuan(g.pnl)}（{pct(g.amt > 0 ? g.mv / g.amt - 1 : 0)}）
                             </td>
                             <td className="num" style={{ textAlign: 'right' }}>{pct(acct.value > 0 ? g.mv / acct.value : 0, 2, false)}</td>
-                            <td className="num">{g.firstBuy}</td>
+                            <td className="num muted">{g.firstBuy}</td>
+                            <td className="num">{g.lastBuy}</td>
                             <td className="num muted" title={g.endEstimated ? '按周末推算（未计节假日）' : ''}>
                               {g.endEstimated ? '~' : ''}{g.endDate || '—'}
                             </td>
@@ -400,7 +407,9 @@ export default function MyBook({ data, days, selected, onSelect }: {
                         </tr>
                       </thead>
                       <tbody>
-                        {[...acct.positions].sort((a, b) => b.mv - a.mv).map((p, i) => (
+                        {[...acct.positions].sort((a, b) => (a.buyDate === b.buyDate
+                          ? (b.buyI - a.buyI || b.amt - a.amt)
+                          : (a.buyDate < b.buyDate ? 1 : -1))).map((p, i) => (
                           <tr key={i}>
                             <td><EtfCell sid={p.sid} d={p.buyDate} /></td>
                             <td className="muted">{p.sw}</td>
