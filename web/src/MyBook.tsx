@@ -219,7 +219,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 n={`实际投出 ${pct(acct.exposure, 1, false)} · 账户最大回撤 ${pct(acct.maxdd, 1, false)}`} />
               <Stat k="可用现金" v={yuan(acct.cash)}
                 n={`占 ${pct(acct.value > 0 ? acct.cash / acct.value : 0, 1, false)} · `
-                  + (sim?.cash_yield ? `按 ${pct(sim.cash_yield, 2, false)} 逐日计息` : '不计息（按你的口径）')} />
+                  + (sim?.cash_yield ? `按 ${pct(sim.cash_yield, 2, false)} 逐日计息` : '不计息')} />
               <Stat k="持仓浮动盈亏" v={`${acct.floatPnl >= 0 ? '+' : ''}${yuan(acct.floatPnl)}`}
                 n={`成本 ${yuan(costOf)} · 浮动收益率 ${pct(costOf > 0 ? acct.mv / costOf - 1 : 0)} · 已实现 ${acct.realised >= 0 ? '+' : ''}${yuan(acct.realised)}（卖出 ${acct.nSells} 笔）`}
                 tone={acct.floatPnl >= 0 ? 'up' : 'down'} />
