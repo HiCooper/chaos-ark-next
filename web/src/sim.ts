@@ -349,10 +349,14 @@ export function runSim(
     if (adds.length) {
       const ws = holdings.map((h) => h.w).concat(adds.map((p) => p[2]))
       const wbar = ws.length ? ws.reduce((a, b) => a + b, 0) / ws.length : 1
+      // 投影必须与引擎真实建仓同规则：**逐笔扣减现金**，否则两笔各自的"上限=全部现金"
+      // 会让买入合计超过可用现金（页面上就会出现买 ¥8,885 但现金只有 ¥7,324）。
+      let cashLeft = cash
       for (const p of adds) {
         const budget = (value * expo * (p[2] / wbar)) / K
-        const amount = Math.min(budget, cash)
+        const amount = Math.min(budget, cashLeft)
         if (amount <= 1e-9 || (budget > 0 && amount < budget * 0.05)) continue
+        cashLeft -= amount
         const px = closeOf(p[1], asOfI) ?? openOf(p[1], asOfI)
         nextBuys.push({
           sw: p[0], sid: p[1], name: nameOf(p[1]), action: p[6], w: p[2], score: p[3],
@@ -368,10 +372,12 @@ export function runSim(
     if (nextBuys.length === 0 && prio.length) {
       const ws2 = holdings.map((h) => h.w).concat(prio.map((p) => p[2]))
       const wbar2 = ws2.length ? ws2.reduce((a, b) => a + b, 0) / ws2.length : 1
+      let cashLeftQ = cash          // 同理：队列内的现金也逐笔递减
       for (const p of prio) {
         const budget = (value * expo * (p[2] / wbar2)) / K
         const px = closeOf(p[1], asOfI) ?? openOf(p[1], asOfI)
-        const canPay = Math.min(budget, cash)
+        const canPay = Math.min(budget, cashLeftQ)
+        cashLeftQ -= canPay
         nextQueue.push({
           sw: p[0], sid: p[1], name: nameOf(p[1]), action: p[6], w: p[2], score: p[3],
           horizon: p[5], amount: budget,
