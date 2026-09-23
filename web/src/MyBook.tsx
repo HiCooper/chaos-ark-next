@@ -216,13 +216,13 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
               <Stat k="账户总值" v={yuan(acct.value)}
                 n={`本金 ${yuan(acct.capital)} · 净值 ${num(multi, 3)} · 累计 ${pct(acct.totalPnl / (acct.capital || 1))}`} />
               <Stat k={`持仓市值（${acct.positions.length} 笔）`} v={yuan(acct.mv)}
-                n={`实际投出 ${pct(acct.exposure, 1, false)} · 浮动盈亏 ${acct.floatPnl >= 0 ? '+' : ''}${yuan(acct.floatPnl)}`} />
+                n={`实际投出 ${pct(acct.exposure, 1, false)} · 账户最大回撤 ${pct(acct.maxdd, 1, false)}`} />
               <Stat k="可用现金" v={yuan(acct.cash)}
                 n={`占 ${pct(acct.value > 0 ? acct.cash / acct.value : 0, 1, false)} · `
                   + (sim?.cash_yield ? `按 ${pct(sim.cash_yield, 2, false)} 逐日计息` : '不计息（按你的口径）')} />
-              <Stat k="已实现盈亏" v={`${acct.realised >= 0 ? '+' : ''}${yuan(acct.realised)}`}
-                n={`已卖出 ${acct.nSells} 笔 · 累计成本 ${yuan(acct.fees)} · 账户最大回撤 ${pct(acct.maxdd, 1, false)}`}
-                tone={acct.realised >= 0 ? 'up' : 'down'} />
+              <Stat k="持仓浮动盈亏" v={`${acct.floatPnl >= 0 ? '+' : ''}${yuan(acct.floatPnl)}`}
+                n={`成本 ${yuan(costOf)} · 浮动收益率 ${pct(costOf > 0 ? acct.mv / costOf - 1 : 0)} · 已实现 ${acct.realised >= 0 ? '+' : ''}${yuan(acct.realised)}（卖出 ${acct.nSells} 笔）`}
+                tone={acct.floatPnl >= 0 ? 'up' : 'down'} />
             </div>
 
             {/* ============ ② 下一个交易日操作 ============ */}
