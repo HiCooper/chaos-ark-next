@@ -21,8 +21,8 @@ export function Metric(props: { k: string; v: string; n?: string; tone?: 'up' | 
   )
 }
 
-export function Chip(props: { children: React.ReactNode; tone?: string }) {
-  return <span className={`chip ${props.tone || ''}`}>{props.children}</span>
+export function Chip(props: { children: React.ReactNode; tone?: string; title?: string }) {
+  return <span className={`chip ${props.tone || ''}`} title={props.title}>{props.children}</span>
 }
 
 export function Bars(props: {

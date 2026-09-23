@@ -38,7 +38,10 @@ export type SidEvent = {
   gross?: number
   ret?: number
   ex?: number
+  /** 未归一化的相对权重（1/σ × 分数倾斜）：中间量，界面上不再展示 */
   w?: number
+  /** 组合占比 = 该笔成交当天占组合的资金比例（引擎算好，已含当日暴露） */
+  w_share?: number
 }
 
 export type EtfModalInput = {
@@ -219,7 +222,12 @@ export function EtfModal(props: EtfModalInput) {
       : Math.max(0, fi - W) / (nD - 1) * 100
     const z1 = fi == null ? 100 : Math.min(nD - 1, fi + W) / (nD - 1) * 100
 
-    const tipKV = (k: string, v: string) => `<div class="ek-kv"><span>${k}</span><b>${v}</b></div>`
+    // 与复盘页「真实交易结算（ETF）」走势图同一套悬浮样式：外层必须包 .ektip，
+    // 否则 .ektip .ek-* 那组排版规则（键值左右分栏、灰色标签、分隔线、等宽数字）全都不生效。
+    const tipKV = (k: string, v: string, tone?: 'up' | 'down' | 'warn') => {
+      const cls = tone === 'up' ? 'ek-up' : tone === 'down' ? 'ek-down' : tone === 'warn' ? 'ek-dim warn' : ''
+      return `<div class="ek-kv"><span>${k}</span><b${cls ? ` class="${cls}"` : ''}>${v}</b></div>`
+    }
 
     ch.setOption({
       animation: false,
@@ -241,7 +249,9 @@ export function EtfModal(props: EtfModalInput) {
           if (i === undefined) return ''
           const raw = data.raw[i]
           const adj = data.adj[i]
-          let html = `<div class="ek-h">${date}</div>`
+          // ---- 内容同样对齐复盘页走势图：ek-h 表头 + ek-kv 键值 + ek-sec 分段 + ek-mute 备注 ----
+          let html = `<div class="ek-h">${date}${
+            data.name ? ` · <span class="ek-sum">${data.name}</span>` : ''}</div>`
           html += tipKV('原始市价', raw != null ? raw.toFixed(3) : '停牌/无数据')
           html += tipKV('复权连续价', adj != null ? adj.toFixed(4) : '—')
           const ni = navIdxOf[date]
@@ -249,7 +259,7 @@ export function EtfModal(props: EtfModalInput) {
           const brk = brkByDate[date]
           if (brk) {
             html += `<div class="ek-sec">份额折算日 ⚠</div>`
-            html += tipKV('原始价格跳变', `${(brk.raw_ret * 100).toFixed(2)}%`)
+            html += tipKV('原始价格跳变', `${(brk.raw_ret * 100).toFixed(2)}%`, 'warn')
             html += tipKV('参照真实收益', `${(brk.ref_ret * 100).toFixed(2)}%（${REF_TXT[brk.ref_src] || brk.ref_src}）`)
             html += tipKV('复权因子', `×${brk.factor.toFixed(4)}`)
             html += `<div class="ek-mute">价值中性事件：持有人份额×价格不变，不应记为盈亏。</div>`
@@ -260,16 +270,19 @@ export function EtfModal(props: EtfModalInput) {
             html += `<div class="ek-sec">${isB ? '买入 B' : '卖出 S'} · ${e.sw}${e.a ? `（${ACT_TXT[e.a] || e.a}）` : ''}</div>`
             html += tipKV(isB ? '买入价（T+1开盘）' : '卖出价（到期收盘）', (e.price ?? 0).toFixed(4))
             if (!isB) {
-              html += tipKV('毛收益率', e.gross != null ? pct(e.gross, 2) : '—')
-              html += tipKV('净收益率（扣双边成本）', e.ret != null ? pct(e.ret, 2) : '—')
-              html += tipKV('相对基准超额', e.ex != null ? pct(e.ex, 2) : '—')
+              const tone = (x: number | null | undefined) => (x == null ? undefined : x >= 0 ? 'up' as const : 'down' as const)
+              html += tipKV('毛收益率', e.gross != null ? pct(e.gross, 2) : '—', tone(e.gross))
+              html += tipKV('净收益率（扣双边成本）', e.ret != null ? pct(e.ret, 2) : '—', tone(e.ret))
+              html += tipKV('相对基准超额', e.ex != null ? pct(e.ex, 2) : '—', tone(e.ex))
             }
-            if (e.w != null) html += tipKV('组合权重 w', `${(e.w * 100).toFixed(2)}%`)
+            // 组合占比：引擎已把「未归一化权重 ÷ 当日 Σw × 当日暴露」算好（settlement.py 的 w_share），
+            // 这里直接给结果，不再显示公式——原始权重 w 是中间量，用户看它没有意义。
+            if (e.w_share != null) html += tipKV('组合占比', `${(e.w_share * 100).toFixed(2)}%`)
             if (isB && e.h) html += tipKV('建议周期', `${e.h} 个交易日`)
             if (isB && e.sc != null) html += tipKV('综合分', String(e.sc))
             if (!isB && e.why) html += `<div class="ek-mute">卖出原因：${e.why}</div>`
           }
-          return html
+          return `<div class="ektip">${html}</div>`
         },
       },
       xAxis: {

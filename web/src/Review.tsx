@@ -57,6 +57,8 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const st = data.settlement || {}
   const sts = st.stats || {}
   const ry = (sts as any).rolling_1y || null
+  // 独立起账的一年分布（每个交易日都当作入市日，各起一本新账）：预期管理口径
+  const rf = (sts as any).rolling_1y_fresh || null
   const curve = st.curve || {}
   const rc = st.risk_control || {}
   const floorScan: any[] = rc.floor_scan || []
@@ -93,9 +95,9 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const allBench: number[] = curve.bench || []
   const events: any[] = st.events || []
   const etfNames: Record<string, string> = st.etf_names || {}
-  // 逐日仓位（辅助轴数据源）：invested = 持仓只数/容量 × 波动目标暴露
+  // 辅助轴数据源：逐日持仓笔数（右轴「持仓仓位」= 笔数/容量）。
+  // 只回答「是否持仓、持仓多少」；实际投入的资金比例由波动目标决定，不在这条轴上表达。
   const pos = st.position || {}
-  const posInvested: number[] = pos.invested || []
   const posHoldings: number[] = pos.holdings || []
   const posMax: number = pos.max_holdings || 32
   // 平均持仓时间：组合口径（真实成交的那批）与信号口径（全部可结算结论）
@@ -146,7 +148,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   allDates.forEach((d, i) => { idxOfDate[d] = i })
 
   // ==================== 每日结论（历史结论库，与曲线逐日对齐） ====================
-  // 结论 ≠ 成交：容量上限（最多同时持有 N 只、每日最多建 2 个）会挡下大部分结论。
+  // 结论 ≠ 成交：容量上限（最多同时持有 N 笔、每日最多建 2 笔）会挡下大部分结论。
   // 把每天的结论也标到图上，才能直观看出「发出了结论」与「真实建了仓」之间的差。
   const conclByDate = useMemo(() => {
     const m: Record<string, any> = {}
@@ -186,7 +188,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
       const [ii, k] = key.split('|')
       const i0 = Number(ii)
       const buy = k === 'B'
-      const inv = posInvested[i0]
+      const inv = posHoldings[i0]
       const hs = Array.from(new Set(arr.map((e: any) => e.h).filter((x: any) => x != null)))
       const reasons = Array.from(
         new Set(arr.map((e: any) => e.why).filter((x: any) => !!x)),
@@ -203,7 +205,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           ? (hs.length ? `建议持有周期 ${hs.join(' / ')} 个交易日` : undefined)
           : (reasons.length ? `卖出原因：${reasons.join('；')}` : undefined),
         pos: (inv != null && !Number.isNaN(inv))
-          ? `${pct(inv, 2, false)}（持仓 ${posHoldings[i0] ?? '—'}/${posMax} 只）`
+          ? `${pct(inv, 2, false)}（持仓 ${posHoldings[i0] ?? '—'}/${posMax} 笔）`
           : undefined,
         lines: (() => {
           // 同一天可能有多条结论落到同一只 ETF（不同细分赛道共用代理标的），
@@ -313,23 +315,45 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             n={`年化 ÷ |最大回撤|：每承受 1 份回撤换到的年化 · 月度胜率 ${pct(sts.monthly_win_rate, 2, false)}`} />
         </div>
 
-        {ry && (
+        {(rf || ry) && (
           <div style={{ marginBottom: 12 }}>
             <div className="grid g4">
-              <Metric k="滚动一年 · 中位收益" v={pct(ry.median)}
-                n={`均值 ${pct(ry.mean)} · 样本 ${ry.n} 个入市日`} tone={(ry.median || 0) >= 0 ? 'up' : 'down'} />
-              <Metric k="滚动一年 · 胜率" v={pct(ry.win_rate, 2, false)}
-                n="任意交易日入市、持有 252 个交易日为正的比例" tone={(ry.win_rate || 0) >= 0.5 ? 'up' : 'down'} />
-              <Metric k="滚动一年 · 最差 5%（p5）" v={pct(ry.p5)}
-                n={`95% 的入市时点持有一年好于该值 · 最好 ${pct(ry.p95)}`} tone="down" />
-              <Metric k="滚动一年 · 最差" v={pct(ry.worst)}
-                n={`历史最倒霉时点的持有一年结果 · 最好 ${pct(ry.best)}`} tone="down" />
+              <Metric k="随机入场 · 持有一年（中位）" v={pct((rf || ry).median)}
+                n={rf && rf.bench_median != null
+                  ? `同期基准中位 ${pct(rf.bench_median)} · 样本 ${rf.n} 个入市日`
+                  : `均值 ${pct((rf || ry).mean)} · 样本 ${(rf || ry).n} 个入市日`}
+                tone={rf && rf.bench_median != null
+                  ? ((rf.median || 0) >= rf.bench_median ? 'up' : 'down')
+                  : ((rf || ry).median || 0) >= 0 ? 'up' : 'down'} />
+              <Metric k="随机入场 · 持有一年（均值）" v={pct((rf || ry).mean)}
+                n={rf && rf.bench_mean != null
+                  ? `同期基准均值 ${pct(rf.bench_mean)} · 均值跑赢，中位未必`
+                  : '分布右偏：少数年份的收益把均值抬起来'}
+                tone={rf && rf.bench_mean != null
+                  ? ((rf.mean || 0) >= rf.bench_mean ? 'up' : 'down')
+                  : ((rf || ry).mean || 0) >= 0 ? 'up' : 'down'} />
+              <Metric k="正收益概率" v={pct((rf || ry).win_rate, 2, false)}
+                n={rf && rf.beat_rate != null
+                  ? `跑赢同期买入持有基准 ${pct(rf.beat_rate, 2, false)} 的入市日`
+                  : '任意交易日入市、持有 252 个交易日为正的比例'}
+                tone={((rf || ry).win_rate || 0) >= 0.5 ? 'up' : 'down'} />
+              <Metric k="最差 5%（p5）/ 最差" v={`${pct((rf || ry).p5)} / ${pct((rf || ry).worst)}`}
+                n={`最好 ${pct((rf || ry).best)} · 这就是「半山腰进场」的下限`} tone="down" />
             </div>
             <div className="note" style={{ marginTop: 8 }}>
-              把区间内<b>每一个交易日</b>都当作假想入市日、模拟持有一年（≈252 个交易日），
-              得到分布后取中位/胜率/分位数——比单一年化更接近「我不小心在半山腰进场会怎样」的真实体验，
-              也不依赖「从窗口起点满仓滚动」的隐含假设。注意：这是历史模拟（T+1 开盘成交、
-              双边成本 {pct(0.0027)}），不含样本外折扣，不构成收益承诺。
+              <b>这是预期管理最重要的一行：随机挑一天入市、只持有一年，中位结果是
+              {pct((rf || ry).median)}，{rf && rf.bench_median != null
+                ? <>而同期买入持有基准的中位是 {pct(rf.bench_median)}——<b>中位跑输</b>；
+                  均值 {pct(rf.mean)} 才高于基准的 {pct(rf.bench_mean)}，
+                  跑赢概率 {pct(rf.beat_rate, 2, false)}</>
+                : <>并不稳定为正</>}。</b>
+              分布右偏：多数年份平淡甚至亏损，收益集中在少数年份——<b>不要把年化 12% 当成"每年都能拿到"</b>。
+              {rf && <> 口径：{rf.n} 个入市日各自<b>从现金重新起一本账</b>（账户状态也重来），
+                持有 {rf.horizon} 个交易日（T+1 开盘成交、双边成本、只买不卖、无再平衡），
+                与「从数据起点一路跟随」的滚动一年（中位 {pct(ry && ry.median)}）是两个不同的问题。</>}
+              {!rf && ' 注意：当前页面拿到的是净值曲线自身的 252 日滚动窗口（连续跟随口径），'
+                + '不是"每天各自起账"的独立口径，请以最新一次完整引擎运行为准。'}
+              历史模拟，不含样本外折扣，不构成收益承诺。
             </div>
           </div>
         )}
@@ -442,12 +466,20 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           <div className="note" style={{ marginBottom: 12 }}>
             <b>结算口径</b>：{st.basis}
             <br />
-            <b>与信号口径的区别</b>：方向判断本身用行业指数衡量（不可交易），
-            收益一律用真实 ETF 衡量。资金曲线的仓位规则是：
-            持仓按 1/σ 分配风险预算（σ 取 60 日已实现波动），组合已实现波动高于
-            {pct(rc.config?.vol_target ?? 0.16, 2, false)} 时按比例降仓、最低不低于
-            {pct(rc.config?.vol_floor ?? 0.8, 2, false)}，未投入部分计现金收益。
-            这套风控只改权重与总暴露，不改任何一笔买卖的时点与标的。
+            <b>与信号口径的区别</b>：方向判断本身用行业指数衡量（不可交易），收益一律用真实 ETF 衡量。
+            <b>资金曲线是有限资金池的可执行账户</b>：初始本金一笔钱，卖出所得是唯一后续资金来源；
+            建仓金额 = min(账户总值 × 入场闸门 ÷ 目标持仓笔数，可用现金)，预算再按 1/σ（σ 取
+            {rc.config?.rp_window ?? 60} 日已实现波动）× 综合分倾斜。
+            <b>持仓权重建仓后随价格漂移、不再被拉回目标——没有每日再平衡</b>；卖出只在持有到期时发生，
+            当日所得次日才可用。{(rc.config?.vol_target ?? null) === null
+              && !(rc.config?.exposure_cap?.enabled)
+              ? <>入场闸门（波动目标 / 暴露上限）<b>已全部停用</b>（可执行口径下它们只压新仓预算、
+                  实测为负贡献），建仓预算不再随波动缩放；<b>风险旋钮改用目标持仓笔数 K</b>。</>
+              : <>入场闸门（波动目标 {pct(rc.config?.vol_target, 2, false)}
+                  、暴露下限 {pct(rc.config?.vol_floor, 2, false)}，叠加 F5 暴露上限）
+                  只决定<b>新仓预算的大小</b>，无法降低存量暴露。</>}
+            未投入现金计现金收益。
+            净值可由事件日志独立重放（账本对账偏差 &lt; 5e-4）。
           </div>
         )}
 
@@ -465,7 +497,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             <b>结论数 ≠ 成交数（口径必须分开看）</b>：
             全区间 {st.n_settled} 条结论能对应到可交易 ETF，
             方向胜率、单笔平均收益统计的是这全部结论；
-            但资金曲线受「最多同时持有 {sts.max_holdings} 只」的容量约束，
+            但资金曲线受「最多同时持有 {sts.max_holdings} 笔」的容量约束，
             实际只成交 <b>{sts.executed_trades}</b> 笔，
             另有 {sts.blocked_by_capacity} 笔因没有槽位未建仓。
             也就是说：曲线只反映真正能执行的那部分，下面每个 B/S 点都是这 {sts.executed_trades} 笔之一。
@@ -498,7 +530,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
               bench={viewBench}
               benchName={st.bench_etf || '沪深300ETF'}
               markers={markers}
-              invested={posInvested.length >= allDates.length ? posInvested.slice(lo, hi + 1) : []}
+
               holdings={posHoldings.length >= allDates.length ? posHoldings.slice(lo, hi + 1) : []}
               maxHoldings={posMax}
               conclusions={viewConcl}
@@ -515,20 +547,20 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
               —— 圆点在结算层逐笔记录，不是事后标注；买入不区分入手与埋伏，是入手还是埋伏在悬浮明细里逐笔标注。
               <br />
               <b>底部是每日结论带（不是成交）</b>：每个交易日一格，颜色就是当天系统给出的结论档位。
-              鼠标停在任意一天上，会一次给出当天净值与仓位、当天的结论（环境 / 热度 / 标的与建议周期 /
+              鼠标停在任意一天上，会一次给出当天净值与实际投出比例、当天的结论（环境 / 热度 / 标的与建议周期 /
               能否直接买到）、以及当天真实成交了什么（成交价、净收益、持有天数、卖出原因）。
               结论数远多于成交数 —— 容量上限会挡下大部分结论，<b>色带与 B/S 圆点的差就是这道约束</b>。
               <br />
-              <b>右侧辅助轴 = 组合仓位</b>：投入资金比例 = 持仓只数 ÷ {posMax} 只容量
-              × 波动目标暴露系数，图上的灰蓝色块就是它的逐日走势（画在曲线下方作背景层）；
-              色块与曲线同源，块顶高度就是当天真正在场的钱。
-              当前区间平均仓位 <b>{pct(
-                (year === 'all'
-                  ? posInvested
-                  : posInvested.slice(lo, hi + 1)
-                ).reduce((a, b) => a + (b || 0), 0) /
-                Math.max(1, (year === 'all' ? posInvested : posInvested.slice(lo, hi + 1)).filter((v) => v != null).length),
-                1, false)}</b>。
+              <b>右侧辅助轴 = 持仓仓位</b>：= 持仓笔数 ÷ {posMax} 个容量槽位，
+              图上的浅黄色块就是它的逐日走势（画在曲线下方作背景层），块顶高度就是当天在场几笔仓位——
+              <b>「当前是否持仓、持仓多少」一眼可见</b>（0% = 空仓，100% = 槽位占满）。
+              同一只 ETF 被不同日期的结论反复加仓会各占一笔，所以块高只表示笔数、不等于持股分散度；
+              实际投入的资金比例由波动目标决定，不在这一轴上表达。
+              当前区间平均持仓 <b>{num(
+                (year === 'all' ? posHoldings : posHoldings.slice(lo, hi + 1))
+                  .reduce((a, b) => a + (b || 0), 0) /
+                Math.max(1, (year === 'all' ? posHoldings : posHoldings.slice(lo, hi + 1)).filter((v) => v != null).length),
+                1)}/{posMax} 笔</b>。
               <br />
               <b>可缩放</b>：在图上滚轮 / 双指直接缩放，或拖动底部滑条；也可按住拖动平移。
               「全部」看长期结构，放大到单年、单月后 B/S 会显成带字母的徽标，便于逐个核对。

@@ -27,8 +27,16 @@ function dimColor(v: number) {
 
 const HZ_KEYS = ['60', '80', '100'] as const
 
-/** 可点击的 ETF 名称：弹出标的走势核验弹窗（全局宿主在 App 层，含总收益摘要） */
-function EtfLink({ name, code }: { name?: string | null; code?: string | null }) {
+/**
+ * 可点击的 ETF 名称：弹出标的走势核验弹窗（全局宿主在 App 层，含总收益摘要）。
+ * focusDate：把弹窗走势图初始视窗聚焦到该交易日（当日结论即结论日，~±240 个交易日）；
+ * 不传则默认看最新时间段。
+ */
+function EtfLink({ name, code, focusDate }: {
+  name?: string | null
+  code?: string | null
+  focusDate?: string
+}) {
   const { open, sidOf } = useEtfModal()
   if (!name) return null
   const sid = sidOf(code)
@@ -36,7 +44,7 @@ function EtfLink({ name, code }: { name?: string | null; code?: string | null })
     <button
       className="linkbtn etf-link"
       title={sid ? '点击查看走势、成交与折算核验' : '该标的暂无走势数据'}
-      onClick={() => sid && open(sid)}
+      onClick={() => sid && open(sid, focusDate)}
       style={{ cursor: sid ? 'pointer' : 'default', fontWeight: 700, fontSize: 'inherit' }}
     >
       {name}
@@ -56,7 +64,7 @@ function hzCell(s: any) {
   }
 }
 
-function PickCard({ p }: { p: any }) {
+function PickCard({ p, date, plan }: { p: any; date?: string; plan?: DayPlan }) {
   const [open, setOpen] = useState(false)
   const buy = p.action === 'BUY_NOW'
   const hz = p.horizon || {}
@@ -81,8 +89,20 @@ function PickCard({ p }: { p: any }) {
         {p.etf ? (
           <>
             <span className="tl">可直接交易</span>
-            <EtfLink name={p.etf} code={p.etf_code} />
+            <EtfLink name={p.etf} code={p.etf_code} focusDate={date} />
             <span className="num muted">{p.etf_code}</span>
+            {/* 当日口径的排队位置：只用信号日及之前的数据，不展示 T+1 的成交结果
+                （否则历史页面会随新交易日而变，等于把未来数据前置到当日页面上） */}
+            {plan && plan.state !== 'unknown' && (
+              <Chip
+                tone={plan.state === 'ready' ? 'accent' : plan.state === 'queued' ? 'dim' : 'warn'}
+                title={plan.detail}
+              >
+                {plan.state === 'full'
+                  ? '当日满仓 · 无空槽'
+                  : `第 ${plan.rank}/${plan.total} 位 · ${plan.state === 'ready' ? '名额内' : '名额外'}`}
+              </Chip>
+            )}
             {p.level === 'L2' && (
               <span className="muted small">（细分赛道由该 ETF 承载）</span>
             )}
@@ -358,6 +378,60 @@ function RankingTable({ data }: { data: any }) {
   )
 }
 
+/** 一条结论「当日」的建仓排队位置（只用当日及之前的数据，不含 T+1 成交结果） */
+type DayPlan = {
+  /** ready = 在当日新建名额内；queued = 排在名额外；full = 当日已满仓；unknown = 数据缺失 */
+  state: 'ready' | 'queued' | 'full' | 'unknown'
+  rank?: number
+  total?: number
+  detail: string
+}
+
+/**
+ * 用当日 day 文件里的 action_today（持仓/容量）与实际新建上限，算出每条结论当日排第几。
+ * 只是**当日口径**：有没有空槽、综合分排第几——刻意不回答「T+1 到底买了没有」，
+ * 那是未来数据（同一份 day/<date>.json 会因后续数据而渲染出不同结果），口径上也不该前置。
+ */
+function buildDayPlan(picks: any[], at: any, maxNewPerDay: number): DayPlan[] {
+  const list = picks || []
+  const nOpen: number | null = at?.n_open ?? null
+  const cap: number | null = at?.max_holdings ?? null
+  if (nOpen == null || cap == null) return list.map(() => ({ state: 'unknown' as const, detail: '' }))
+  const room = Math.max(0, cap - nOpen)
+  const quota = Math.min(room, maxNewPerDay)
+  // 名次只在「有可交易标的」的结论之间排：没有标的的结论结算层不会建仓
+  const rows = list
+    .map((p, i) => ({ i, tradable: !!p.etf_code, score: Number(p.composite) || 0 }))
+    .filter((r) => r.tradable)
+    .sort((a, b) => b.score - a.score)
+  const total = rows.length
+  const out: DayPlan[] = list.map(() => ({ state: 'unknown' as const, detail: '' }))
+  rows.forEach((r, n) => {
+    const rank = n + 1
+    const base = `当日结算层 ${nOpen}/${cap} 笔持仓、空槽 ${room} 个，每日最多新建 ${maxNewPerDay} 笔；`
+      + `本条综合分第 ${rank}/${total}。`
+    if (room === 0) {
+      out[r.i] = {
+        state: 'full', rank, total,
+        detail: base + '没有空槽：新结论要等已有仓位到期释放槽位后才能建仓'
+          + '（建仓发生在结论日的下一交易日开盘）。以上只用当日收盘数据，不含成交结果。',
+      }
+    } else if (rank <= quota) {
+      out[r.i] = {
+        state: 'ready', rank, total,
+        detail: base + '在当日新建名额内——按规则会在下一交易日（T+1）开盘买入，'
+          + '实际成交取决于那时的槽位状态。以上只用当日收盘数据。',
+      }
+    } else {
+      out[r.i] = {
+        state: 'queued', rank, total,
+        detail: base + '排在当日名额之外，当日不建仓。以上只用当日收盘数据。',
+      }
+    }
+  })
+  return out
+}
+
 function Small({ children }: { children: React.ReactNode }) {
   return <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--ink-3)', marginLeft: 2 }}>{children}</span>
 }
@@ -366,6 +440,18 @@ export default function Today({ data }: { data: any }) {
   const ri = data.regime_info || {}
   const comps = ri.components || null
   const offline = !!data._offline
+  const { maxNewPerDay } = useEtfModal()
+  // 当日结算层的在途仓位占用（day 文件里的 action_today，当日收盘口径）
+  const at = data.action_today || {}
+  const cap: number | null = at.max_holdings ?? null
+  const nOpen: number | null = at.n_open ?? null
+  const capFull = cap != null && nOpen != null && nOpen >= cap
+  // 每条结论「当日」的排队位置：与容量条同源（都用 action_today），保证页面内数字一致
+  const dayPicks = data?.picks || []
+  const plan = React.useMemo(
+    () => buildDayPlan(dayPicks, at, maxNewPerDay),
+    [dayPicks, at, maxNewPerDay],
+  )
   if (data.error) return <div className="card"><div className="empty">{data.date} 无有效结论：{data.error}</div></div>
 
   return (
@@ -419,6 +505,33 @@ export default function Today({ data }: { data: any }) {
         </div>
       </div>
 
+      {/* 组合容量：结论层给方向，能否真的建仓还受结算层 32 槽容量约束。
+          满宽放在市场环境下方——它同时影响下面的结论栏与出手栏。
+          未满仓也展示：让「有槽位 ≠ 一定成交（还要排每日新建名额）」这条口径常驻可见。 */}
+      {cap != null && nOpen != null && (
+        <div
+          className="card"
+          style={{ padding: '12px 20px', borderLeft: `3px solid var(--${capFull ? 'warn' : 'accent'})` }}
+        >
+          <div className="small" style={{ color: 'var(--ink-2)' }}>
+            {capFull ? (
+              <>
+                <b>组合容量已满（{nOpen}/{cap} 笔）</b>：结论层给的是方向，能不能真的建仓由结算层决定——
+                没有空槽时，新结论要等已有仓位到期释放槽位后，才能在 T+1 开盘买入；
+              </>
+            ) : (
+              <>
+                <b>组合容量 {nOpen}/{cap} 笔（剩 {cap - nOpen} 个空槽）</b>：结论层给的是方向，能不能真的建仓由结算层决定——
+                有空槽还要排每日新建名额、按综合分从高到低取，排名在名额外的当日不建仓；
+              </>
+            )}
+            {' '}下面每张结论卡标的是<b>当日口径</b>的排队位置（第 k/m 位、名额内 / 外），
+            只用当日收盘数据，不含下一交易日的成交结果——历史页面因此不随新数据变化。
+            {' '}「n 笔」是建仓笔数、不去重——同一只 ETF 被反复加仓会各占一笔。
+          </div>
+        </div>
+      )}
+
       <div className="twocol">
         <div className="card">
           <div className="colhead">
@@ -428,7 +541,9 @@ export default function Today({ data }: { data: any }) {
           {data.picks.length === 0 ? (
             <div className="empty">当日无行业通过共振门槛。空仓等待本身也是结论。</div>
           ) : (
-            data.picks.map((p: any, i: number) => <PickCard key={i} p={p} />)
+            data.picks.map((p: any, i: number) => (
+              <PickCard key={i} p={p} date={data.date} plan={plan[i]} />
+            ))
           )}
         </div>
 

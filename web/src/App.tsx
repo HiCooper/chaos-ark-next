@@ -4,10 +4,12 @@ import Review from './Review'
 import Engine from './Engine'
 import Calendar from './Calendar'
 import Lab from './Lab'
+import MyBook from './MyBook'
 import { EtfModalHost } from './etf-modal-host'
 
 const TABS = [
-  { k: 'today', label: '今日结论' },
+  { k: 'today', label: '今日研判' },
+  { k: 'book', label: '我的持仓' },
   { k: 'review', label: '复盘' },
   { k: 'engine', label: '引擎' },
   { k: 'lab', label: '实验' },
@@ -124,6 +126,12 @@ export default function App() {
               ? <Today data={currentDay} />
               : <div className="loading">装载 {selected} 研判数据</div>}
           </>
+        )}
+
+        {!err && today && tab === 'book' && (
+          currentDay
+            ? <MyBook data={currentDay} days={hist?.days || []} selected={selected} onSelect={setSelected} />
+            : <div className="loading">装载 {selected} 研判数据</div>
         )}
 
         {!err && review && tab === 'review' && <Review data={review} hist={hist} />}

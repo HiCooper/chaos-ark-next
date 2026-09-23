@@ -20,10 +20,14 @@ const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
 
 // 画布与各分区的像素布局：GRID_H 用来把「B 画在线下方 N 像素」换算成数值空间，
 // 必须与 yAxis/grid 的实际像素高度一致，否则标记会跑偏。
-const CHART_H = 400
+// 主网格高度决定净值曲线的纵向分辨率：208px 时曲线被压扁（看起来失真），
+// 加到 320px；画布同步加高，其余留白（刻度文字、滑条）不变。
+const CHART_H = 480
 const GRID_TOP = 30
-const GRID_H = 208
-const STRIP_TOP = 296
+const GRID_H = 320
+// 主网格底部 → 「每日结论」色带的间距：留给主网格的 x 轴刻度文字
+const AXIS_GAP = 58
+const STRIP_TOP = GRID_TOP + GRID_H + AXIS_GAP
 const STRIP_H = 14
 // 字母徽标（B/S）可容纳的单方向标记数上限：超过此数，字母互相重叠，收成小圆点。
 // B 与 S 分别画在净值线下方/上方，是两个独立系列，拥挤度按单方向最多的一侧算——
@@ -50,7 +54,12 @@ const STRIP_COLORS: Record<number, string> = {
 }
 const C_NAV = '#c62828'
 const C_BENCH = '#8b94a3'
-const C_AUX = '#5b7fa6'
+// 持仓仓位水位（右轴）：暖琥珀色系。原来的蓝灰 #5b7fa6 与灰色基准线 #8b94a3 太接近，
+// 面积底色又是同一色相的浅蓝，基准线在其中几乎分不出来；改成浅黄既不抢主曲线，
+// 又能一眼分清「背景水位」和「灰色基准线」。
+const C_AUX = '#c9a227'                 // 水位边界线
+// 持仓仓位常年在中高位（满仓期贴近 100%），底色压到 0.12 才不会盖住网格线与灰色基准线。
+const C_AUX_FILL = 'rgba(224,183,62,0.12)' // 水位面积底色（浅黄）
 const C_SELL = '#1565c0'
 
 export type ConclDay = {
@@ -67,7 +76,10 @@ export type NavChartProps = {
   bench: number[]
   benchName: string
   markers: Marker[]
-  invested: number[]
+  /**
+   * 逐日持仓笔数 + 容量：右轴「持仓仓位」= 持仓笔数 ÷ 容量，
+   * 只回答「当前是否持仓、持仓多少」，不掺资金比例（那由波动目标决定，见复盘页说明）。
+   */
   holdings: number[]
   maxHoldings: number
   /** 与 dates 等长：每天的历史结论（无结论日为 null） */
@@ -167,7 +179,7 @@ function conclHtml(c: ConclDay, maxPicks = 6): string {
 }
 
 export function NavChart(props: NavChartProps) {
-  const { dates, nav, bench, markers, invested, holdings, maxHoldings, conclusions, markerTip } = props
+  const { dates, nav, bench, markers, holdings, maxHoldings, conclusions, markerTip } = props
   const box = useRef<HTMLDivElement | null>(null)
   const chart = useRef<echarts.ECharts | null>(null)
   const sigRef = useRef<string>('')
@@ -177,7 +189,10 @@ export function NavChart(props: NavChartProps) {
   const [win, setWin] = useState<{ a: string; b: string; n: number } | null>(null)
 
   const n = dates.length
-  const hasAux = invested.length === n
+  // 持仓仓位（右轴）= 持仓笔数 / 容量槽位：0 表示空仓，100% 表示 32 个槽位占满
+  const hasAux = holdings.length === n && !!maxHoldings
+  const slotRatio = (h: number | null | undefined) =>
+    (h == null || !maxHoldings ? null : Math.min(1, h / maxHoldings))
 
   // 显式缩放控制：滚轮/双指之外再给一组按钮，避免「不知道能缩放」或触控板不好用时没法操作
   const zoomTo = (start: number, end: number) =>
@@ -199,12 +214,12 @@ export function NavChart(props: NavChartProps) {
 
     const series: any[] = [
       {
-        id: 'aux', name: '仓位（右轴）', type: 'line', xAxisIndex: 0, yAxisIndex: 1,
-        data: hasAux ? invested : [], symbol: 'none', z: 1, silent: true,
-        lineStyle: { width: 1, color: C_AUX, opacity: 0.5 },
+        id: 'aux', name: '持仓仓位（右轴）', type: 'line', xAxisIndex: 0, yAxisIndex: 1,
+        data: hasAux ? holdings.map(slotRatio) : [], symbol: 'none', z: 1, silent: true,
+        lineStyle: { width: 1, color: C_AUX, opacity: 0.55 },
         // origin 用数值 0（y 轴下沿）：ECharts 的 'start'/'end' 指轴像素方向的端点，
         // 在 y 轴上 'start' 落在顶部，会把色块画反。
-        areaStyle: { color: 'rgba(91,127,166,0.20)', origin: 0 },
+        areaStyle: { color: C_AUX_FILL, origin: 0 },
       },
       {
         id: 'nav', name: 'ARK 方向组合（风控口径）', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
@@ -257,7 +272,7 @@ export function NavChart(props: NavChartProps) {
       legend: {
         top: 0, left: 54, itemWidth: 14, itemHeight: 8, itemGap: 14,
         textStyle: { fontSize: 11, color: '#4b5563' },
-        data: ['ARK 方向组合（风控口径）', props.benchName || '基准 ETF', '仓位（右轴）', '每日结论'],
+        data: ['ARK 方向组合（风控口径）', props.benchName || '基准 ETF', '持仓仓位（右轴）', '每日结论'],
       },
       graphic: [
         { type: 'text', left: 4, top: STRIP_TOP + 1, style: { text: '每日结论', fontSize: 10, fill: '#8b94a3' } },
@@ -278,14 +293,14 @@ export function NavChart(props: NavChartProps) {
           const i = idxOfDate[date]
           if (i === undefined) return ''
           const c = conclusions[i] || null
-          const inv = hasAux ? invested[i] : null
+          const slot = hasAux ? slotRatio(holdings[i]) : null
           const dayMks = markerTip(i)
           const kv = [
             `<div class="ek-kv"><span>组合（自区间起点）</span><b>${((nav[i] - 1) * 100).toFixed(2)}%</b></div>`,
             `<div class="ek-kv"><span>${props.benchName || '基准'}</span><b>${((bench[i] - 1) * 100).toFixed(2)}%</b></div>`,
-            inv != null
-              ? `<div class="ek-kv"><span>当日仓位</span><b>${(inv * 100).toFixed(2)}%${
-                holdings[i] != null ? ` · 持仓 ${holdings[i]}/${maxHoldings} 只` : ''}</b></div>`
+            slot != null
+              ? `<div class="ek-kv"><span>持仓仓位</span><b>${holdings[i]}/${maxHoldings} 笔`
+                + `${slot === 0 ? '（空仓）' : `（${(slot * 100).toFixed(0)}%）`}</b></div>`
               : '',
           ].join('')
           return `<div class="ektip">
@@ -348,7 +363,7 @@ export function NavChart(props: NavChartProps) {
       ],
       series,
     }
-  }, [dates, nav, bench, markers, invested, holdings, conclusions, hasAux, maxHoldings, n,
+  }, [dates, nav, bench, markers, holdings, conclusions, hasAux, maxHoldings, n,
       props.benchName, props.markerTip, props.tradeTip])
 
   // refit 挂在 ref 上：它由「初始化」effect 创建，但必须等「选项就绪」effect 之后才允许被调用。

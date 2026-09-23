@@ -34,7 +34,7 @@ function RulesPanel({ rules }: { rules: any }) {
 
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
           {live.regime && <Chip>当前环境 {live.regime}</Chip>}
-          {live.n_picks != null && <Chip>今日结论 {live.n_picks} 条</Chip>}
+          {live.n_picks != null && <Chip>今日研判 {live.n_picks} 条</Chip>}
           {live.n_open != null && <Chip>在场持仓 {live.n_open} 笔</Chip>}
           {live.demoted != null && <Chip tone="warn">累计前置过滤降级 {live.demoted} 条</Chip>}
         </div>
@@ -182,8 +182,10 @@ export default function Engine({ data, today }: { data: any; today: any }) {
           <li><b>申万行业指数不可交易</b>，因此它只用于判断方向；一切收益数字都来自真实行业 ETF 的成交价，并扣除双边成本。</li>
           <li>ETF 上市之前该行业不可交易，这些结论不进入收益统计，也不用指数回填——这是早期样本偏少的真实原因。</li>
           <li>细分赛道若没有对应 ETF，用所属一级行业 ETF 结算，会稀释收益；页面上已标注代理关系。</li>
-          <li>资金曲线是「有信号即建仓、持仓按 1/σ 风险预算与综合分加权、组合波动超目标时按比例降暴露」，
-              不含主动择时加减仓；这不是交易系统的业绩承诺。</li>
+          <li>资金曲线是<b>有限资金池的可执行账户</b>：初始本金一笔钱、卖出所得是唯一后续资金来源，
+              建仓金额 = <code>min(账户总值 × 入场闸门 ÷ 目标持仓笔数, 可用现金)</code>，
+              预算再按 1/σ × 综合分倾斜；<b>持仓权重建仓后随价格漂移，没有每日再平衡</b>，
+              入场闸门（波动目标 / 暴露上限）只压新仓预算、压不了存量。这不是交易系统的业绩承诺。</li>
           <li>ETF 跟踪误差、折溢价、成分调整、涨跌停与流动性骤变未被单独建模。</li>
           <li>统计口径为样本内回测；分年度与跨牛熊分段结果已在复盘页披露，请优先看跨市场阶段是否一致再决定是否采信。</li>
         </ul>
