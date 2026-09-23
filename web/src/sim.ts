@@ -121,6 +121,10 @@ export type SimResult = {
   positions: Position[]
   todayBuys: Position[]
   todaySells: SellRow[]
+  /** 今天这批买单的来源（= 上一交易日的结论日）；为空表示起始日之前 */
+  todaySignalDate: string | null
+  /** 今天没买成的原因（有结论但没建仓时才非空） */
+  todayBlocked: 'no_candidates' | 'no_slots' | 'no_cash' | null
   nextBuys: PlanRow[]
   /** 排队候选：当前建不了仓（槽位满/现金不足）时的优先级队列与"若有槽位时的预算" */
   nextQueue: PlanRow[]
@@ -209,6 +213,8 @@ export function runSim(
   let todaySells: SellRow[] = []
   let realised = 0, fees = 0, nBuys = 0, nSells = 0, cashBlocked = 0, slotBlocked = 0
   let peak = capital, maxdd = 0
+  let todaySignalDate: string | null = null
+  let todayCands = 0, todaySlotsFree = 0
 
   for (let k = startK; k <= asOfI; k++) {
     const d = dates[k]
@@ -222,6 +228,11 @@ export function runSim(
     let adds = day ? [...day.p].sort((a, b) => b[3] - a[3]).slice(0, maxNew) : []
     const slotsFree = Math.max(0, sim.max_holdings - holdings.length)
     if (adds.length > slotsFree) slotBlocked += adds.length - slotsFree
+    if (k === asOfI) {                   // 选中日：记录当天买单的来源与约束
+      todaySignalDate = k - 1 >= sI ? dates[k - 1] : null
+      todayCands = day ? day.p.length : 0
+      todaySlotsFree = slotsFree
+    }
     adds = adds.slice(0, slotsFree)
     if (adds.length) {
       const ws = holdings.map((h) => h.w).concat(adds.map((p) => p[2]))
@@ -391,6 +402,11 @@ export function runSim(
     realised, fees, peak, maxdd,
     exposure: value > 0 ? mv / value : 0,
     positions: holdings, todayBuys, todaySells, nextBuys, nextQueue, nextSells, nextBlocked,
+    todaySignalDate,
+    todayBlocked: todaySignalDate === null ? null
+      : (todayCands === 0 ? 'no_candidates'
+        : todaySlotsFree === 0 ? 'no_slots'
+        : todayBuys.length === 0 ? 'no_cash' : null),
     nBuys, nSells, cashBlocked, slotBlocked,
   }
 }

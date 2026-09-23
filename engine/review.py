@@ -912,7 +912,9 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                          + f"{RC['vol_floor']:.0%}，叠加 F5 暴露上限）只影响**新仓预算**，"
                          + "无法降低存量暴露——存量只能靠到期退出。"))
                 + "买入在 T+1 开盘、卖出在到期日收盘（当日卖出所得次日可用），"
-                + f"未投入现金按 {RC['cash_yield']:.1%} 计息，每日最多新建 "
+                + (f"未投入现金按 {RC['cash_yield']:.1%} 计息，"
+                   if RC.get("cash_yield") else "未投入现金**不计息**，")
+                + f"每日最多新建 "
                 + f"{PF['max_new_per_day']} 个仓位。"
                 + f"结论前置过滤：剔除 {n_demoted} 条「事前即自相矛盾或追高」的结论"
                 + "（120日相对行业等权超额为负 / 价格位于近60日区间顶部 5%），"

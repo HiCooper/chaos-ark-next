@@ -50,7 +50,10 @@ import rules as RULES  # noqa: E402
 #       → ark-1.7.0-stability（方案 B 落参：PB 闸门下限 0.45→0.55（G3 剂量最优）+
 #         暴露上限环境档加陡 PANIC.10/DEFEND.35/NEUTRAL.70、动量 floor 0.35→0.25；
 #         复盘窗口起点 2016→2018（ETF 覆盖度不足）。见 stability-overlay 实验）
-ENGINE_VERSION = "ark-1.8.1-rp-only-k24"
+#       → ark-1.8.0-executable / ark-1.8.1-rp-only-k24（结算层改有限资金池可执行账户；
+#         F5/波动目标停用；K=16→24。见 docs/口径变更-2026-09-23-可执行账户.md）
+#       → ark-1.8.2-cash0-k24（2026-09-23 用户口径：闲置现金**不计息**，原 1.0%/年）
+ENGINE_VERSION = "ark-1.8.2-cash0-k24"
 
 
 def config_hash() -> str:

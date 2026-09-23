@@ -167,9 +167,11 @@ def build_rules(settlement: Optional[dict] = None,
               "**已停用（ark-1.8.1）**。原设计是「下跌年份压暴露」，但那依赖每日再平衡；"
               "在可执行账户里它压不了存量，只剩阴跌期少买，全窗口变成 11.75%/-36.45%（更差）。"
               "要压尾部请调低目标持仓笔数 K（K=24 最差一年 -21.8%）。"),
-        _item("未投入部分收益", f"{_pct(rc['cash_yield'], 2)} / 年",
+        _item("未投入部分收益", ("不计息" if not rc.get("cash_yield")
+                                else f"{_pct(rc['cash_yield'], 2)} / 年"),
               "config.RISK_CONTROL.cash_yield",
-              "闲置资金按货币基金口径计息，避免低估空仓期的机会成本。"),
+              "2026-09-23 起按用户要求取 0：闲置资金不计收益（保守口径，"
+              "不把货基/保证金理财当成默认行为）。"),
         _item("风险旋钮（ark-1.8.1 起）", "目标持仓笔数 K",
               "config.PORTFOLIO.target_positions",
               "可执行账户里唯一有效的风险旋钮：K 越小越集中、均值越高、尾部越深；"
