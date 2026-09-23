@@ -166,6 +166,15 @@ export default function MyBook({ data, days, selected, onSelect }: {
           )}
         </div>
 
+        {data?.realtime_fill && (
+          <div className="warnbar">
+            <b>数据含实时兜底日</b>
+            {Object.keys(data.realtime_fill.days).join('、')}：
+            官方申万日线尚未发布（停在 {data.realtime_fill.official_last}），收盘价取自实时行情、
+            <b>量额为估算</b>；官方出数后重跑 <code>ark.py daily</code> 会自动覆盖，结论与持仓会随之微调。
+          </div>
+        )}
+
         {failed && <div className="note">影子账户数据缺失（`data/sim.json`），请先运行一次完整引擎（`python engine/pipeline.py --all`）。</div>}
         {!failed && !sim && <div className="muted small">正在重放账户（首次加载 `data/sim.json`）…</div>}
 

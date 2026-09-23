@@ -62,19 +62,32 @@ def raw_path(kind: str, key: str) -> str:
 
 
 def put(kind: str, key: str, records: List[dict], source: str,
-        merge: bool = True, note: str = "") -> dict:
-    """把一手数据写入 L0。records 必须含 'date' 字段；按日期 merge-append。"""
+        merge: bool = True, note: str = "", overwrite_est: bool = False) -> dict:
+    """把一手数据写入 L0。records 必须含 'date' 字段；按日期 merge-append。
+
+    overwrite_est=True 时，带 `est` 标记（估算值，如官方源滞后时的实时兜底）
+    的旧行可以被**不带 est 的官方值**覆盖——这是"估算可被真值替换"的唯一通道，
+    正常的一手数据之间仍然先到先得、绝不覆盖。
+    """
     path = raw_path(kind, key)
     final = records
+    n_replaced = 0
     if merge and os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 old = json.load(f)
             if old:
-                by_date = {r["date"]: r for r in old}
-                # 重叠日期保留首采值；只有新日期才追加
-                new_rows = [r for r in records if r["date"] not in by_date]
-                final = old + new_rows
+                inc_by_date = {r["date"]: r for r in records}
+                kept = []
+                for r in old:
+                    inc = inc_by_date.get(r["date"])
+                    if (overwrite_est and inc is not None and r.get("est")
+                            and not inc.get("est")):
+                        n_replaced += 1
+                        continue          # 官方值替换估算值
+                    kept.append(r)
+                new_rows = [r for r in records if r["date"] not in {x["date"] for x in kept}]
+                final = sorted(kept + new_rows, key=lambda r: r["date"])
         except Exception:
             final = records
     with open(path, "w", encoding="utf-8") as f:
@@ -91,6 +104,7 @@ def put(kind: str, key: str, records: List[dict], source: str,
         "sha256": _sha256(path),
         "appended": len(final) - (len(records) if merge and final is not records else 0),
         "note": note,
+        "replaced_est": n_replaced,
     }
     m.setdefault(kind, {})[key] = entry
     _save_manifest(m)

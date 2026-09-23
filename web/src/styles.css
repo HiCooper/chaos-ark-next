@@ -653,3 +653,11 @@ td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3);
 .opbar-v { font-size: 16px; font-weight: 700; letter-spacing: .2px; }
 .opbar-v.mute { color: var(--ink-3); font-weight: 500; }
 td.buyamt { font-weight: 700; font-size: 13px; }
+
+/* 数据质量提示条（如官方源滞后、用了实时兜底） */
+.warnbar {
+  margin: 0 0 12px; padding: 9px 12px; font-size: 12px; line-height: 1.6;
+  color: #7a4b00; background: #fff8e6; border: 1px solid #f0d79a;
+  border-left: 3px solid #e0a800; border-radius: 8px;
+}
+.warnbar code { background: rgba(0,0,0,.05); padding: 0 3px; border-radius: 3px; }

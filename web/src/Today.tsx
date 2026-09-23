@@ -456,6 +456,16 @@ export default function Today({ data }: { data: any }) {
 
   return (
     <>
+      {data.realtime_fill && (
+        <div className="warnbar">
+          <b>数据含实时兜底日</b>
+          {Object.keys(data.realtime_fill.days).join('、')}：
+          申万官方日线尚未发布（官方停在 {data.realtime_fill.official_last}），
+          收盘价取自申万实时行情，<b>成交量/成交额为估算</b>（按沪深300量比缩放）。
+          官方出数后重跑 <code>ark.py daily</code> 会自动用真值覆盖；
+          结论方向可信，量能相关打分请留一分余地。
+        </div>
+      )}
       {offline && (
         <div className="card" style={{ padding: '10px 16px', borderLeft: '3px solid var(--warn)', marginBottom: 14 }}>
           <div className="small" style={{ color: 'var(--ink-2)' }}>

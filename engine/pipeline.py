@@ -485,14 +485,26 @@ def main():
         "days": history,
     }, open(f"{C.OUT_DIR}/history.json", "w"), ensure_ascii=False)
 
+    # 数据质量标记：官方申万日线滞后时用实时行情兜底的日期（量额为估算），
+    # 结论页与该日 day 文件都会带上，避免用户以为那是官方口径的完整数据。
+    rt_fill = None
+    try:
+        with open(f"{C.CACHE_DIR}/panel.json", "r", encoding="utf-8") as _f:
+            rt_fill = (json.load(_f) or {}).get("realtime_fill")
+    except Exception:
+        rt_fill = None
+    est_days = set(((rt_fill or {}).get("days") or {}).keys())
+
     day_dir = f"{C.OUT_DIR}/day"
     os.makedirs(day_dir, exist_ok=True)
     # 增量模式只重写重算过的日期：缓存命中的日期其结论与出手判断都与盘上
     # 逐字节相同，重写是纯 IO 浪费（2598 个文件 ≈ 数十秒）。
     write_dates = dates[-tail_n:] if tail_n is not None else dates
     for d in write_dates:
-        json.dump(day_payload(conclusions[d], exits_by_date.get(d)),
-                  open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
+        _pl = day_payload(conclusions[d], exits_by_date.get(d))
+        if rt_fill and d in est_days:
+            _pl["realtime_fill"] = rt_fill
+        json.dump(_pl, open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
     print(f"      day/<date>.json：重写 {len(write_dates)} / 共 {len(dates)}"
           f"（复用 {n_reused} 天缓存，其中 {n_exit_days} 日有在场持仓）")
 
@@ -504,6 +516,8 @@ def main():
         print(f"      今日出手：需卖出 {at['n_sell_today']} 笔，"
               f"在场持仓 {at['n_open']} 笔（平均持有 {at['avg_held']} 个交易日），"
               f"失效预警 {at['n_warn']} 笔")
+    if rt_fill:
+        today["realtime_fill"] = rt_fill
     json.dump(today, open(f"{C.OUT_DIR}/today.json", "w"), ensure_ascii=False)
     print("      " + today.get("summary", ""))
 

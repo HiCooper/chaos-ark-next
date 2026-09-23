@@ -151,6 +151,9 @@ def water_level() -> dict:
                             "last": lasts[-1] if lasts else None}
 
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
+    if panel and panel.get("realtime_fill"):
+        lv["L0_realtime_fill"] = {"last": max((panel["realtime_fill"].get("days") or {"": None})),
+                                  "days": list((panel["realtime_fill"].get("days") or {}).keys())}
     lv["L1_panel"] = ({"last": panel["dates"][-1], "days": len(panel["dates"]),
                        "targets": len(panel["series"]),
                        "generated_at": panel.get("generated_at")} if panel else None)
@@ -204,7 +207,7 @@ def cmd_status() -> int:
     print("ARK 水位报告（唯一可信口径：以下日期应当同日）")
     print(f"  检查时间: {lv['checked_at']}")
     for k, v in lv.items():
-        if k in ("checked_at", "L2_features_fp", "site_synced"):
+        if k in ("checked_at", "L2_features_fp", "site_synced", "L0_realtime_fill"):
             continue
         if isinstance(v, dict):
             d = v.get("last") or v.get("date")
@@ -224,6 +227,12 @@ def cmd_status() -> int:
     else:
         print(f"\n  ✗ 水位不一致：{uniq}")
         print("    排查顺序：L0 抓取是否成功 → panel/etf_panel 是否重建 → pipeline 是否带 --refresh")
+    rf = lv.get("L0_realtime_fill")
+    if rf:
+        print(f"\n  ⚠ 含实时兜底日：{rf['days']}（官方申万日线停在 "
+              f"{(panel := _jload(os.path.join(ROOT, 'cache', 'panel.json'))) and panel.get('realtime_fill', {}).get('official_last')}）"
+              "——收盘价取自申万实时行情、成交量/成交额为估算；")
+        print("    官方出数后重跑 ark.py daily 会自动用真值覆盖（L0 overwrite_est）")
     sync = lv.get("site_synced") or {}
     bad = [k for k, ok in sync.items() if not ok]
     if bad:
