@@ -36,6 +36,13 @@ def main() -> None:
     ep = json.load(open(f"{C.CACHE_DIR}/etf_panel.json"))
     panel, rep = qfq.apply_qfq(ep, None, verbose=False)
     dates = panel["dates"]
+    # 弹窗走势只展示复盘窗口（BACKTEST_START 起）：面板日期轴从申万指数基期
+    # 1999-12-30 开始，不截断的话图表会显得「从 1999 年开始」且与复盘口径不一致。
+    # adj 是 raw×累计因子，截断不改任何数值；断点同样只保留窗口内的。
+    beg = C.BACKTEST_START or None
+    if beg:
+        i0 = next((i for i, d in enumerate(dates) if d >= beg), 0)
+        dates = dates[i0:]
     listing = panel.get("listing") or {}
     sw_to_etf = panel.get("sw_to_etf") or {}
 
@@ -55,7 +62,7 @@ def main() -> None:
             # adj：份额折算还原后的连续价（结算取价口径，见 engine/qfq.py）
             raw_rows.append(round(rrow["close"], 6) if rrow and rrow.get("close") else None)
             adj_rows.append(round(arow["close"], 6) if arow and arow.get("close") else None)
-        bl = breaks_all.get(sid) or []
+        bl = [b for b in (breaks_all.get(sid) or []) if not beg or b["date"] >= beg]
         obj = {
             "sid": sid,
             "code": sid.split(".")[-1],
