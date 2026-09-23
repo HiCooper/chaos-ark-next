@@ -78,14 +78,10 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
   // 执行日的单子当晚就能定下来，不存在"盘中才知道"的问题。
   const clientToday = localToday()
   const execDay = acct?.nextDate || null
-  const execState = execStateOf(execDay, clientToday)
+  // 滞后只在"看最新一天"时才提醒；翻阅历史日期时，它的下一交易日当然是过去，不必打扰
+  const latestDate = days.length ? days[days.length - 1].date : date
+  const execState = date === latestDate ? execStateOf(execDay, clientToday) : 'before'
   const staleDays = execState === 'stale' && execDay ? daysBetweenISO(execDay, clientToday) : 0
-  const clock = new Date()
-  const mins = clock.getHours() * 60 + clock.getMinutes()
-  const intraday = execState !== 'today' ? null
-    : mins < 9 * 60 + 30 ? `开盘前（现在可以挂单：下面 ${acct?.nextBuys.length || 0} 笔买入挂在开盘）`
-    : mins <= 15 * 60 ? '盘中（买入按开盘价成交；卖出按收盘价成交，收盘前完成）'
-    : '已收盘（下面的是今天应执行的操作，收盘后即可与新结论核对）'
   const multi = acct && acct.capital > 0 ? acct.value / acct.capital : null
   const costOf = (acct?.positions || []).reduce((a, p) => a + p.amt, 0)
   // 执行日（待执行）口径
@@ -208,48 +204,16 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
 
         {acct && started && (
           <>
-            {/* ============ 时间轴：什么时候知道、什么时候执行 ============ */}
-            <div className="tstrip">
-              <div className="tstep done">
-                <span className="tk">结论日（已发布）</span>
-                <span className="tv num">{date}</span>
-                <span className="tn">
-                  收盘后生成{generatedAt ? ` · ${generatedAt}` : ''}；它决定下一交易日的买卖
-                </span>
-              </div>
-              <div className={`tstep ${execState === 'today' ? 'now' : execState === 'stale' ? 'late' : 'next'}`}>
-                <span className="tk">执行日{execState === 'today' ? '（今天）' : execState === 'before' ? '（下一交易日）' : '（已过）'}</span>
-                <span className="tv num">{execDay || '—'}</span>
-                <span className="tn">
-                  {execState === 'before' ? '顺序：开盘买入 → 收盘卖出'
-                    : execState === 'today' ? (intraday || '开盘买入 → 收盘卖出')
-                    : execState === 'stale' ? `⚠ 已过去 ${staleDays} 天，但新的结论还没出`
-                    : '—'}
-                </span>
-              </div>
-              <div className="tstep">
-                <span className="tk">下一份结论</span>
-                <span className="tv num">{execDay ? `${execDay} 收盘后` : '—'}</span>
-                <span className="tn">约 15:05 起可用申万实时行情兜底出当日结论（官方出数后自动覆盖）</span>
-              </div>
-            </div>
-
             {execState === 'stale' && (
-              <div className="warnbar" style={{ marginTop: 10 }}>
-                <b>数据滞后 {staleDays} 天</b>：今天要做的单子本应来自 {execDay} 收盘的结论，
-                但那一份还没生成（申万指数未出数或未跑 daily）。下面是**最近一份可用结论**
-                （{date}）对应的 {execDay} 操作单，已过期，仅供你补做/核对；
-                请在收盘后运行 <code>python3 engine/ark.py daily</code>——约 15:05 起可用实时行情兜底出当日结论。
+              <div className="muted small" style={{ marginBottom: 8 }}>
+                数据截至 {date}：下面是 <b>{execDay}</b> 的操作，已经过期（落后的几天还没出结论）——
+                请在收盘后运行 <code>python3 engine/ark.py daily</code> 更新。
               </div>
             )}
 
             {/* ============ ① 操作单：执行日的买入 / 卖出 ============ */}
             <div className="colhead" style={{ margin: '12px 0 6px' }}>
-              <h2 style={{ fontSize: 16 }}>
-                {execState === 'today' ? `今天（${execDay}）要做什么`
-                  : execState === 'before' ? `${execDay}（下一交易日）要做什么`
-                  : `${execDay} 的操作单（已过期）`}
-              </h2>
+              <h2 style={{ fontSize: 16 }}>{execDay} 的操作</h2>
               <span className="n">
                 买入 = <b>{date}</b> 收盘的结论，在 <b>{execDay} 开盘</b>成交；
                 卖出 = <b>{execDay}</b> 到期的持仓，在 <b>{execDay} 收盘</b>成交
@@ -258,13 +222,13 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
 
             <div className="opbar">
               <div className="opbar-item">
-                <span className="opbar-k">{execState === 'today' ? '今天买' : '待买入'}</span>
+                <span className="opbar-k">要买入</span>
                 <span className={`opbar-v num ${acct.nextBuys.length ? 'up' : 'mute'}`}>
                   {acct.nextBuys.length} 笔 · {yuan(buyTotal)}
                 </span>
               </div>
               <div className="opbar-item">
-                <span className="opbar-k">{execState === 'today' ? '今天卖' : '待卖出'}</span>
+                <span className="opbar-k">要卖出</span>
                 <span className={`opbar-v num ${acct.nextSells.length ? 'down' : 'mute'}`}>
                   {acct.nextSells.length} 笔 · {yuan(sellTotal)}
                 </span>
@@ -273,13 +237,6 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 <span className="opbar-k">账户</span>
                 <span className="opbar-v num">
                   {yuan(acct.value)} · 现金 {yuan(acct.cash)} · 持仓 {acct.positions.length}/{sim?.max_holdings}
-                </span>
-              </div>
-              <div className="opbar-item">
-                <span className="opbar-k">买入后</span>
-                <span className="opbar-v num">
-                  持仓 {Math.min(sim?.max_holdings || 32, acct.positions.length + acct.nextBuys.length)}/{sim?.max_holdings}
-                  · 现金 {yuan(Math.max(0, acct.cash - buyTotal))}
                 </span>
               </div>
             </div>
@@ -373,59 +330,6 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                   </tr>
                 </tbody>
               </table>
-            )}
-
-            {/* —— 结论日当天已成交（对账，不需要操作） —— */}
-            <div className="colhead" style={{ margin: '12px 0 6px' }}>
-              <h2 style={{ fontSize: 14 }}>
-                对账：{date}{execState === 'today' ? '（上一交易日）' : ''}已成交（{todayExecuted} 笔）
-              </h2>
-              <span className="n">
-                {date} 开盘买入 {acct.todayBuys.length} 笔（来自 {acct.todaySignalDate || '—'} 的结论）、
-                收盘卖出 {acct.todaySells.length} 笔，合计买入 {yuan(todayBuyTotal)} / 卖出 {yuan(todaySellTotal)}（已实现 {todaySellPnl >= 0 ? '+' : ''}{yuan(todaySellPnl)}）
-              </span>
-            </div>
-            {todayExecuted === 0 ? (
-              <div className="muted small" style={{ padding: '2px 0 4px' }}>{date} 没有成交。</div>
-            ) : (
-              <div className="tradescroll">
-                <table style={{ marginBottom: 4 }}>
-                  <thead>
-                    <tr>
-                      <th>方向</th><th>ETF</th><th>行业</th><th>动作</th>
-                      <th style={{ textAlign: 'right' }}>成交价</th>
-                      <th style={{ textAlign: 'right' }}>金额</th>
-                      <th style={{ textAlign: 'right' }}>说明</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {acct.todayBuys.map((b, i) => (
-                      <tr key={`b${i}`}>
-                        <td><Chip tone="up">买入</Chip></td>
-                        <td><EtfCell sid={b.sid} d={b.buyDate} /></td>
-                        <td className="muted">{b.sw}</td>
-                        <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
-                        <td className="num" style={{ textAlign: 'right' }}>{num(b.buyPx, 3)}</td>
-                        <td className="num" style={{ textAlign: 'right' }}>{yuan(b.amt)}</td>
-                        <td className="muted small" style={{ textAlign: 'right' }}>{num(b.shares, 0)} 份 · 到期 {b.endDate || '—'}</td>
-                      </tr>
-                    ))}
-                    {acct.todaySells.map((s, i) => (
-                      <tr key={`s${i}`}>
-                        <td><Chip tone="exit">卖出</Chip></td>
-                        <td><EtfCell sid={s.sid} d={s.sellDate} /></td>
-                        <td className="muted">{s.sw}</td>
-                        <td className="muted small">{s.buyDate} 买入 · 持 {s.heldDays} 日</td>
-                        <td className="num" style={{ textAlign: 'right' }}>{num(s.buyPx, 3)} → {num(s.sellPx, 3)}</td>
-                        <td className="num" style={{ textAlign: 'right' }}>{yuan(s.proceeds)}</td>
-                        <td className={`num ${s.pnl >= 0 ? 'up' : 'down'}`} style={{ textAlign: 'right', fontWeight: 700 }}>
-                          {s.pnl >= 0 ? '+' : ''}{yuan(s.pnl)}（{pct(s.ret)}）
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
             )}
 
             {/* ============ ② 账户概览 ============ */}
@@ -544,6 +448,59 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                       </tbody>
                     </>
                   )}
+                </table>
+              </div>
+            )}
+
+            {/* —— 结论日当天已成交（对账，不需要操作） —— */}
+            <div className="colhead" style={{ margin: '12px 0 6px' }}>
+              <h2 style={{ fontSize: 14 }}>
+                对账：{date}{execState === 'today' ? '（上一交易日）' : ''}已成交（{todayExecuted} 笔）
+              </h2>
+              <span className="n">
+                {date} 开盘买入 {acct.todayBuys.length} 笔（来自 {acct.todaySignalDate || '—'} 的结论）、
+                收盘卖出 {acct.todaySells.length} 笔，合计买入 {yuan(todayBuyTotal)} / 卖出 {yuan(todaySellTotal)}（已实现 {todaySellPnl >= 0 ? '+' : ''}{yuan(todaySellPnl)}）
+              </span>
+            </div>
+            {todayExecuted === 0 ? (
+              <div className="muted small" style={{ padding: '2px 0 4px' }}>{date} 没有成交。</div>
+            ) : (
+              <div className="tradescroll">
+                <table style={{ marginBottom: 4 }}>
+                  <thead>
+                    <tr>
+                      <th>方向</th><th>ETF</th><th>行业</th><th>动作</th>
+                      <th style={{ textAlign: 'right' }}>成交价</th>
+                      <th style={{ textAlign: 'right' }}>金额</th>
+                      <th style={{ textAlign: 'right' }}>说明</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {acct.todayBuys.map((b, i) => (
+                      <tr key={`b${i}`}>
+                        <td><Chip tone="up">买入</Chip></td>
+                        <td><EtfCell sid={b.sid} d={b.buyDate} /></td>
+                        <td className="muted">{b.sw}</td>
+                        <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
+                        <td className="num" style={{ textAlign: 'right' }}>{num(b.buyPx, 3)}</td>
+                        <td className="num" style={{ textAlign: 'right' }}>{yuan(b.amt)}</td>
+                        <td className="muted small" style={{ textAlign: 'right' }}>{num(b.shares, 0)} 份 · 到期 {b.endDate || '—'}</td>
+                      </tr>
+                    ))}
+                    {acct.todaySells.map((s, i) => (
+                      <tr key={`s${i}`}>
+                        <td><Chip tone="exit">卖出</Chip></td>
+                        <td><EtfCell sid={s.sid} d={s.sellDate} /></td>
+                        <td className="muted">{s.sw}</td>
+                        <td className="muted small">{s.buyDate} 买入 · 持 {s.heldDays} 日</td>
+                        <td className="num" style={{ textAlign: 'right' }}>{num(s.buyPx, 3)} → {num(s.sellPx, 3)}</td>
+                        <td className="num" style={{ textAlign: 'right' }}>{yuan(s.proceeds)}</td>
+                        <td className={`num ${s.pnl >= 0 ? 'up' : 'down'}`} style={{ textAlign: 'right', fontWeight: 700 }}>
+                          {s.pnl >= 0 ? '+' : ''}{yuan(s.pnl)}（{pct(s.ret)}）
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
                 </table>
               </div>
             )}
