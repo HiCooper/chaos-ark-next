@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { NavChart } from './chart'
 import { Bars, Card, Chip, Marker, MarkerLine, Metric, num, pct } from './ui'
-import { EtfModal, SidEvent } from './etf-modal'
+import { useEtfModal } from './etf-modal-host'
 
 const REGIME_TXT: Record<string, string> = { ATTACK: '进攻', NEUTRAL: '中性', DEFEND: '防守', PANIC: '恐慌' }
 const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
@@ -70,8 +70,8 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const cases = data.cases || {}
   const recent = data.recent || []
   const [basisOpen, setBasisOpen] = useState(false)
-  // 标的走势核验弹窗：点「可交易标的」或折算样本打开，逐笔核对 ETF 的钱算得对不对
-  const [etfModal, setEtfModal] = useState<{ sid: string; focusDate?: string } | null>(null)
+  // 标的走势核验弹窗：宿主在 App 层（EtfModalHost），本页只拿 open 句柄
+  const { open: openEtf } = useEtfModal()
   // 全池份额折算断点清单（web/public/data/etf/_breaks.json，由 engine/build_etf_webdata.py 生成）
   const [breaks, setBreaks] = useState<any[] | null>(null)
   useEffect(() => {
@@ -92,17 +92,6 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const allBench: number[] = curve.bench || []
   const events: any[] = st.events || []
   const etfNames: Record<string, string> = st.etf_names || {}
-
-  // 选定标的的全部 B/S 事件（B 事件本身不带日期，按曲线索引补上）
-  const sidEvents = useMemo(() => {
-    if (!etfModal) return [] as SidEvent[]
-    const out: SidEvent[] = []
-    for (const e of events) {
-      if (e.sid !== etfModal.sid) continue
-      out.push({ ...e, date: allDates[e.i] })
-    }
-    return out
-  }, [etfModal, events, allDates])
   // 逐日仓位（辅助轴数据源）：invested = 持仓只数/容量 × 波动目标暴露
   const pos = st.position || {}
   const posInvested: number[] = pos.invested || []
@@ -569,7 +558,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                       <button
                         className="linkbtn"
                         title="查看该 ETF 走势与这笔交易的买卖点标注"
-                        onClick={() => setEtfModal({ sid: t.sid, focusDate: t.buyDate })}
+                        onClick={() => openEtf(t.sid, t.buyDate)}
                       >
                         {t.etf}
                       </button>{' '}
@@ -626,7 +615,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
               <tbody>
                 {breaks.map((b, i) => (
                   <tr key={i} style={{ cursor: 'pointer' }}
-                      onClick={() => setEtfModal({ sid: b.sid, focusDate: b.date })}>
+                      onClick={() => openEtf(b.sid, b.date)}>
                     <td className="num">{b.date}</td>
                     <td><b>{b.name}</b> <span className="muted num">{b.code}</span></td>
                     <td className="num" style={{ textAlign: 'right', color: (b.raw_ret ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
@@ -644,17 +633,6 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             </table>
           </div>
         </Card>
-      )}
-
-      {etfModal && (
-        <EtfModal
-          sid={etfModal.sid}
-          focusDate={etfModal.focusDate}
-          curveDates={allDates}
-          curveNav={allNav}
-          events={sidEvents}
-          onClose={() => setEtfModal(null)}
-        />
       )}
 
       {/* ==================== 执行口径对照 ==================== */}

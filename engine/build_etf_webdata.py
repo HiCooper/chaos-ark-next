@@ -81,8 +81,21 @@ def main() -> None:
         json.dump({"generated": True, "n": len(flat), "breaks": flat},
                   f, ensure_ascii=False, separators=(",", ":"))
 
+    # 标的索引：etf_code → sid 映射（前端「今日结论」等页只有 6 位代码，
+    # 弹窗按 sid 取数，必须有这层解析；覆盖全池，含从未成交的 ETF）
+    index = {}
+    for sid in ep["series"]:
+        index[sid.split(".")[-1]] = {
+            "sid": sid,
+            "name": (listing.get(sid) or {}).get("name", sid),
+            "sw": next((sw for sw, s in sw_to_etf.items() if s == sid), None),
+        }
+    with open(os.path.join(OUT_DIR, "_index.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated": True, "n": len(index), "etfs": index},
+                  f, ensure_ascii=False, separators=(",", ":"))
+
     print(f"[etf-webdata] 写出 {n_files} 只 ETF 走势文件 + _breaks.json "
-          f"({len(flat)} 处折算断点) → {OUT_DIR}")
+          f"({len(flat)} 处折算断点) + _index.json ({len(index)} 只) → {OUT_DIR}")
 
 
 if __name__ == "__main__":

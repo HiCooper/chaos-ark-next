@@ -94,6 +94,15 @@ function pairTrades(events: SidEvent[]) {
     .sort((a, b) => b.buyDate.localeCompare(a.buyDate)) // 买入日倒序：最近的交易排最前
 }
 
+/** 序列首末非空值的累计涨跌幅（数据起点 → 最新交易日，「到目前为止」的 ETF 自身涨幅） */
+function seriesTotal(a: (number | null)[], dates: string[]):
+  { pct: number; from: string; to: string } | null {
+  let i0 = -1, i1 = -1
+  for (let i = 0; i < a.length; i++) if (a[i] != null) { if (i0 < 0) i0 = i; i1 = i }
+  if (i0 < 0 || i1 <= i0 || a[i0] == null || a[i1] == null) return null
+  return { pct: a[i1]! / a[i0]! - 1, from: dates[i0], to: dates[i1] }
+}
+
 export function EtfModal(props: EtfModalInput) {
   const { sid, curveDates, curveNav, events, focusDate, onClose } = props
   const [data, setData] = useState<EtfSeries | null>(null)
@@ -117,6 +126,42 @@ export function EtfModal(props: EtfModalInput) {
   }, [sid])
 
   const trades = useMemo(() => pairTrades(events), [events])
+
+  // ---- 到目前为止的总收益摘要 ----
+  // 已结算交易统计（名义账本口径：每笔独立 1 万元本金）
+  const settled = useMemo(() => {
+    const rs = trades.map((t) => t.ret).filter((r): r is number => r != null)
+    if (!rs.length) return null
+    const win = rs.filter((r) => r > 0).length
+    return {
+      n: rs.length,
+      winRate: win / rs.length,
+      avg: rs.reduce((a, b) => a + b, 0) / rs.length,
+      // 累计名义盈亏：每笔 1 万元独立账本的盈亏求和（元）
+      pnl: rs.reduce((a, r) => a + r * NOTIONAL, 0),
+    }
+  }, [trades])
+
+  // 在途持仓：B 事件没有任何 S 事件与之配对（S.bd = 买入日）
+  const openPos = useMemo(() => {
+    const soldBd = new Set(events.filter((e) => e.k === 'S').map((e) => e.bd))
+    return events.filter((e) => e.k === 'B' && e.date && !soldBd.has(e.date))
+  }, [events])
+
+  // ETF 自身「到目前为止」的累计涨跌（复权口径，数据起点 → 最新交易日）
+  const etfTotal = useMemo(
+    () => (data ? seriesTotal(data.adj, data.dates) : null),
+    [data],
+  )
+
+  // 最新复权价（在途持仓估值用）
+  const lastAdj = useMemo(() => {
+    if (!data) return null
+    for (let i = data.adj.length - 1; i >= 0; i--) {
+      if (data.adj[i] != null) return { v: data.adj[i]!, d: data.dates[i] }
+    }
+    return null
+  }, [data])
 
   // ---- echarts ----
   const navIdxOf: Record<string, number> = useMemo(() => {
@@ -284,6 +329,42 @@ export function EtfModal(props: EtfModalInput) {
 
         {err && <div className="note">走势数据加载失败：{err}</div>}
         {!data && !err && <div className="note">加载走势数据…</div>}
+
+        {/* 到目前为止的总收益摘要：ETF 自身累计 + 系统交易该 ETF 的账本合计 + 在途持仓 */}
+        {data && (etfTotal || settled || openPos.length > 0) && (
+          <div className="etf-stats">
+            {etfTotal && (
+              <div className="estat">
+                <div className="l">ETF 累计涨跌（复权）</div>
+                <div className={`v num ${etfTotal.pct >= 0 ? 'up' : 'down'}`}>{pct(etfTotal.pct, 1)}</div>
+                <div className="m">{etfTotal.from} → {etfTotal.to}（数据起止）</div>
+              </div>
+            )}
+            {settled && (
+              <div className="estat">
+                <div className="l">系统已结算 {settled.n} 笔</div>
+                <div className={`v num ${settled.pnl >= 0 ? 'up' : 'down'}`}>
+                  {settled.pnl >= 0 ? '+' : ''}{settled.pnl.toFixed(0)} 元
+                </div>
+                <div className="m">
+                  胜率 {pct(settled.winRate, 0, false)} · 单笔平均 {pct(settled.avg, 2)} · 名义 1 万/笔
+                </div>
+              </div>
+            )}
+            {openPos.map((e, i) => {
+              const fl = lastAdj && e.price ? lastAdj.v / e.price - 1 : null
+              return (
+                <div className="estat" key={i}>
+                  <div className="l">在途持仓（{e.date} 买入）</div>
+                  <div className={`v num ${fl != null && fl >= 0 ? 'up' : 'down'}`}>{fl != null ? pct(fl, 2) : '—'}</div>
+                  <div className="m">
+                    买价 {e.price?.toFixed(4)} → 现价（{lastAdj?.d}）{lastAdj?.v.toFixed(4)} · 未扣卖出成本
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {data && (
           <>

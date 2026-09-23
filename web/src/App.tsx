@@ -4,6 +4,7 @@ import Review from './Review'
 import Engine from './Engine'
 import Calendar from './Calendar'
 import Lab from './Lab'
+import { EtfModalHost } from './etf-modal-host'
 
 const TABS = [
   { k: 'today', label: '今日结论' },
@@ -79,7 +80,7 @@ export default function App() {
   const currentDay = isLatest ? today : dayCache[selected]
 
   return (
-    <>
+    <EtfModalHost settlement={review?.settlement}>
       <header>
         <div className="header-inner">
           <div className="brand">
@@ -129,6 +130,6 @@ export default function App() {
         {!err && review && tab === 'engine' && <Engine data={review} today={today} />}
         {tab === 'lab' && <Lab data={lab} />}
       </div>
-    </>
+    </EtfModalHost>
   )
 }

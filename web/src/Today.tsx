@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Chip, num, pct } from './ui'
+import { useEtfModal } from './etf-modal-host'
 
 const DIM_LABEL: Record<string, string> = {
   mainline: '长期主线',
@@ -25,6 +26,23 @@ function dimColor(v: number) {
 }
 
 const HZ_KEYS = ['60', '80', '100'] as const
+
+/** 可点击的 ETF 名称：弹出标的走势核验弹窗（全局宿主在 App 层，含总收益摘要） */
+function EtfLink({ name, code }: { name?: string | null; code?: string | null }) {
+  const { open, sidOf } = useEtfModal()
+  if (!name) return null
+  const sid = sidOf(code)
+  return (
+    <button
+      className="linkbtn etf-link"
+      title={sid ? '点击查看走势、成交与折算核验' : '该标的暂无走势数据'}
+      onClick={() => sid && open(sid)}
+      style={{ cursor: sid ? 'pointer' : 'default', fontWeight: 700, fontSize: 'inherit' }}
+    >
+      {name}
+    </button>
+  )
+}
 
 /** 相似样本前瞻统计统一读法：兼容完整 stats（mean_excess/win_rate/mean_maxdd）与紧凑 hz（excess/win/dd） */
 function hzCell(s: any) {
@@ -58,12 +76,12 @@ function PickCard({ p }: { p: any }) {
         </div>
       </div>
 
-      {/* 真实可交易标的：结论必须落到能买的东西上 */}
+      {/* 真实可交易标的：结论必须落到能买的东西上；点名称弹出走势核验 */}
       <div className="tradable">
         {p.etf ? (
           <>
             <span className="tl">可直接交易</span>
-            <b>{p.etf}</b>
+            <EtfLink name={p.etf} code={p.etf_code} />
             <span className="num muted">{p.etf_code}</span>
             {p.level === 'L2' && (
               <span className="muted small">（细分赛道由该 ETF 承载）</span>
@@ -192,7 +210,7 @@ function PosRow({ x, tone }: { x: any; tone?: 'sell' | 'warn' }) {
     <div className={`posrow ${tone || ''}`}>
       <div className="r1">
         <span className="nm">{x.sw}</span>
-        <span className="etf">{x.etf}</span>
+        <span className="etf"><EtfLink name={x.etf} code={x.etf_code} /></span>
         <span className="cd num">{x.etf_code || '—'}</span>
         {x.action && (
           <Chip tone={x.action === 'BUY_NOW' ? 'up' : 'ambush'}>
@@ -312,7 +330,9 @@ function RankingTable({ data }: { data: any }) {
                 <td className="num">{num(r.composite, 1)}</td>
                 <td><Chip tone={ACT_TONE[r.action] || 'dim'}>{ACT_TXT[r.action] || r.action || '观察'}</Chip></td>
                 <td className="muted">{STAGE_TXT[r.stage] || '—'}</td>
-                <td className="muted">{r.etf ? `${r.etf} ${r.etf_code || ''}` : '—'}</td>
+                <td className="muted">
+                  {r.etf ? (<><EtfLink name={r.etf} code={r.etf_code} /> <span className="num">{r.etf_code || ''}</span></>) : '—'}
+                </td>
                 {bestCell ? (
                   <td className={`num ${bestCell.excess >= 0 ? 'up' : 'down'}`}>
                     {pct(bestCell.excess)} <span className="muted small">/{best} 日</span>
