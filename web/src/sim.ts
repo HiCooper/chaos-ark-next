@@ -371,10 +371,12 @@ export function runSim(
       for (const p of prio) {
         const budget = (value * expo * (p[2] / wbar2)) / K
         const px = closeOf(p[1], asOfI) ?? openOf(p[1], asOfI)
+        const canPay = Math.min(budget, cash)
         nextQueue.push({
           sw: p[0], sid: p[1], name: nameOf(p[1]), action: p[6], w: p[2], score: p[3],
-          horizon: p[5], amount: budget, cashCut: 0,
-          lots: px ? Math.floor(budget / px / 100) : 0,
+          horizon: p[5], amount: budget,
+          cashCut: budget > 0 ? 1 - canPay / budget : 0,
+          lots: px ? Math.floor(canPay / px / 100) : 0,
         })
       }
     }

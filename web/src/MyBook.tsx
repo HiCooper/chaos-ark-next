@@ -246,7 +246,53 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
               </span>
             </div>
             {acct.nextBuys.length === 0 ? (
-              <div className="muted small" style={{ padding: '2px 0 10px' }}>{buyReason}</div>
+              <>
+                <div className="muted small" style={{ padding: '2px 0 8px' }}>{buyReason}</div>
+                {acct.nextQueue.length > 0 && (
+                  <>
+                    <div className="muted small" style={{ marginBottom: 4 }}>
+                      <b>今日结论给出的建仓候选（{acct.nextQueue.length} 笔）</b>：
+                      下一交易日开盘按金额买入；名额或现金一释放，就按综合分从高到低建仓
+                    </div>
+                    <table style={{ marginBottom: 12 }}>
+                      <thead>
+                        <tr>
+                          <th>ETF</th><th>行业</th><th>动作</th>
+                          <th style={{ textAlign: 'right' }}>综合分</th>
+                          <th style={{ textAlign: 'right' }}>
+                            {acct.nextBlocked === 'no_cash' ? '按可用现金可买' : '买入金额（有名额时）'}
+                          </th>
+                          <th style={{ textAlign: 'right' }}>约合手数</th>
+                          <th style={{ textAlign: 'right' }}>持有周期</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...acct.nextQueue].sort((a, b) => b.score - a.score).map((b, i) => {
+                          const amt = b.amount * (1 - b.cashCut)
+                          return (
+                            <tr key={i}>
+                              <td><EtfCell sid={b.sid} d={acct.nextDate || undefined} /></td>
+                              <td className="muted">{b.sw}</td>
+                              <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
+                              <td className="num" style={{ textAlign: 'right' }}>{num(b.score, 1)}</td>
+                              <td className="num buyamt" style={{ textAlign: 'right' }}>{yuan(amt)}</td>
+                              <td className="num muted" style={{ textAlign: 'right' }}>{b.lots > 0 ? `${b.lots} 手` : '不足 1 手'}</td>
+                              <td className="num" style={{ textAlign: 'right' }}>{b.horizon} 日</td>
+                            </tr>
+                          )
+                        })}
+                        <tr>
+                          <td colSpan={4} style={{ textAlign: 'right' }} className="muted">合计</td>
+                          <td className="num" style={{ textAlign: 'right', fontWeight: 700 }}>
+                            {yuan(acct.nextQueue.reduce((a, b) => a + b.amount * (1 - b.cashCut), 0))}
+                          </td>
+                          <td colSpan={2} />
+                        </tr>
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </>
             ) : (
               <table style={{ marginBottom: 12 }}>
                 <thead>
