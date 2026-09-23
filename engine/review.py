@@ -712,10 +712,13 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
         phases = market_phases(book)
         by_phase = stats_by_phase(trades, phases)
 
-        # 覆盖度演进：每年末可交易行业数
+        # 覆盖度演进：每年末可交易行业数（只统计复盘窗口起点及以后）
         coverage = []
         seen_years = sorted(set(d[:4] for d in book.dates))
+        beg_year = C.BACKTEST_START[:4] if C.BACKTEST_START else None
         for y in seen_years:
+            if beg_year and y < beg_year:
+                continue
             ys = [d for d in book.dates if d.startswith(y)]
             if not ys:
                 continue

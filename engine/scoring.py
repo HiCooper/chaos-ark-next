@@ -25,9 +25,11 @@ DIMS = ["mainline", "pullback", "exhaust", "rebound", "risk", "regime_fit"]
 # ---- 实验台旋钮（默认值 = 生产口径）----
 # PB_GATE_BASE：主线强度闸门的下限。pullback = pullback_raw * ml_gate，
 #   ml_gate = PB_GATE_BASE + (1-PB_GATE_BASE) * mainline/100。
-#   生产 0.45（= 原硬编码 0.45 + 0.55*ml/100，逐字节一致）。调大即软化乘法挤压
+#   ark-1.6.0 生产 0.45（= 原硬编码 0.45 + 0.55*ml/100，逐字节一致）。
+#   ark-1.7.0 落参 0.55（G3 剂量实验 0.55<0.60<0.70 单调最优：回撤 -21.61%、
+#   2024 转正、负年 4→3，见 signal-break 实验）。调大即软化乘法挤压
 #   （2024 年该挤压让 pb>=52 的候选从 55.8/天 掉到 0.40/天，见 lab_gate2024）。
-PB_GATE_BASE = float(os.environ.get("ARK_PB_GATE_BASE", 0.45))
+PB_GATE_BASE = float(os.environ.get("ARK_PB_GATE_BASE", 0.55))
 # REGIME_ADJ=off：关闭环境权重调整（全部按 NEUTRAL 处理），用于检验
 #   「PANIC/DEFEND 下压低 mainline 权重」是否加剧了弱市哑火。
 REGIME_ADJ = os.environ.get("ARK_REGIME_ADJ", "on") != "off"

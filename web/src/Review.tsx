@@ -83,7 +83,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
 
   const years = Object.keys(st.by_year || {})
   const phases = (st.by_phase || []).filter((p: any) => p.n > 0)
-  const coverage = st.coverage || []
+  const coverage = (st.coverage || []).filter((c: any) => Number(c.year) >= 2018)
 
   // ==================== 净值曲线上的买卖点（B/S） ====================
   // 事件全部来自结算层真实成交回执：B = T+1 开盘买入，S = 到期收盘卖出。
@@ -773,8 +773,8 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             }))}
           />
           <div className="note" style={{ marginTop: 8 }}>
-            行业 ETF 是真实约束：2016 年市场上只有个位数行业有可交易的 ETF，
-            因此早期结论能结算的样本天然很少，这不是数据缺陷。
+            行业 ETF 是真实约束：2018 年之前市场上只有个位数行业有可交易的 ETF，
+            早期样本天然稀少且参考价值低，因此复盘窗口与覆盖度统计均从 2018 年起。
             越靠近当下，覆盖越完整，结论参考价值越高。
           </div>
         </Card>

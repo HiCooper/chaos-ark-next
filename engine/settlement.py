@@ -361,8 +361,9 @@ def build_exposure_cap(book: EtfBook, cfg: Optional[dict] = None,
     这是机制必需而非调参：取 min（双重保守）会把年化砍到 4~6%
     （lab_downyear5 R2 参数网格，18 组 max 族全落在 11.45~11.95% 宽平台）。
 
-      - 动量cap：基准 ETF 250 日收益 < 0 -> 上限 momentum_floor(0.35)，否则 1.0
-      - 环境cap：前一日市场环境 PANIC/DEFEND/NEUTRAL/ATTACK -> 0.30/0.55/0.80/1.00
+      - 动量cap：基准 ETF 250 日收益 < 0 -> 上限 momentum_floor（ark-1.7.0: 0.25）
+      - 环境cap：前一日市场环境 PANIC/DEFEND/NEUTRAL/ATTACK -> 0.10/0.35/0.70/1.00
+        （ark-1.7.0 加陡档；1.6.0 为 0.30/0.55/0.80/1.00）
 
     无前视：动量序列右移一日（第 k 日只用 ≤k-1 收盘价），环境用 dates[k-1]
     的 regime（build 时已内嵌右移，不再二次移位）。regime 缺失时退化为

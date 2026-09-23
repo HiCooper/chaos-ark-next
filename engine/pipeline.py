@@ -47,7 +47,10 @@ import rules as RULES  # noqa: E402
 #       → ark-1.5.0-etf-qfq（ETF 份额折算复权落参，结算取价口径变更，见 config.ETF_QFQ）
 #       → ark-1.6.0-exposure-cap（F5 暴露上限落参，组合层口径变更，见
 #         config.RISK_CONTROL.exposure_cap：动量∨环境 cap，下跌年份治理）
-ENGINE_VERSION = "ark-1.6.0-exposure-cap"
+#       → ark-1.7.0-stability（方案 B 落参：PB 闸门下限 0.45→0.55（G3 剂量最优）+
+#         暴露上限环境档加陡 PANIC.10/DEFEND.35/NEUTRAL.70、动量 floor 0.35→0.25；
+#         复盘窗口起点 2016→2018（ETF 覆盖度不足）。见 stability-overlay 实验）
+ENGINE_VERSION = "ark-1.7.0-stability"
 
 
 def config_hash() -> str:
