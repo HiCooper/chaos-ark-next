@@ -324,11 +324,28 @@ def cmd_verify() -> int:
     fp = lv.get("L2_features_fp") or {}
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
     if panel and fp:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("arkpipe", os.path.join(ENGINE, "pipeline.py"))
-        m = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(m)
-        now_fp = m.panel_fingerprint(panel)
+        # 指纹检查必须在带 numpy 的解释器里跑：pipeline.py 顶层 import numpy，
+        # 而 ark.py 本身可能由系统 python3（无依赖）启动，不能在本进程内
+        # exec_module。与取数/重放同理，交给子进程执行。
+        pipe = os.path.join(ENGINE, "pipeline.py")
+        code = (
+            "import importlib.util, json\n"
+            f"spec = importlib.util.spec_from_file_location('arkpipe', {pipe!r})\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            f"panel = json.load(open({os.path.join(ROOT, 'cache', 'panel.json')!r}))\n"
+            "print('FP=' + m.panel_fingerprint(panel))\n"
+        )
+        r = subprocess.run([pick_python(need_akshare=False), "-u", "-c", code],
+                           cwd=ENGINE, capture_output=True, text=True)
+        now_fp = ""
+        for ln in (r.stdout or "").splitlines():
+            if ln.startswith("FP="):
+                now_fp = ln[3:].strip()
+        if r.returncode != 0 or not now_fp:
+            print("  ✗ 特征层一致性检查执行失败（解释器无法加载 pipeline）")
+            for ln in ((r.stderr or r.stdout or "").strip().splitlines()[-3:]):
+                print("      " + ln)
+            return 1
         ok = fp.get("panel_fp") == now_fp
         print(f"  {'✓' if ok else '✗'} features.npz 与 panel.json 指纹{'一致' if ok else '不一致（陈旧，需 --refresh）'}")
         if not ok:
