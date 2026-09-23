@@ -211,7 +211,21 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
               </div>
             )}
 
-            {/* ============ ① 操作单：执行日的买入 / 卖出 ============ */}
+            {/* ============ ① 账户概览（先看钱，再看要做什么） ============ */}
+            <div className="grid g4" style={{ margin: '2px 0 12px' }}>
+              <Stat k="账户总值" v={yuan(acct.value)}
+                n={`本金 ${yuan(acct.capital)} · 净值 ${num(multi, 3)} · 累计 ${pct(acct.totalPnl / (acct.capital || 1))}`} />
+              <Stat k={`持仓市值（${acct.positions.length} 笔）`} v={yuan(acct.mv)}
+                n={`实际投出 ${pct(acct.exposure, 1, false)} · 浮动盈亏 ${acct.floatPnl >= 0 ? '+' : ''}${yuan(acct.floatPnl)}`} />
+              <Stat k="可用现金" v={yuan(acct.cash)}
+                n={`占 ${pct(acct.value > 0 ? acct.cash / acct.value : 0, 1, false)} · `
+                  + (sim?.cash_yield ? `按 ${pct(sim.cash_yield, 2, false)} 逐日计息` : '不计息（按你的口径）')} />
+              <Stat k="已实现盈亏" v={`${acct.realised >= 0 ? '+' : ''}${yuan(acct.realised)}`}
+                n={`已卖出 ${acct.nSells} 笔 · 累计成本 ${yuan(acct.fees)} · 账户最大回撤 ${pct(acct.maxdd, 1, false)}`}
+                tone={acct.realised >= 0 ? 'up' : 'down'} />
+            </div>
+
+            {/* ============ ② 下一个交易日操作 ============ */}
             <div className="colhead" style={{ margin: '12px 0 6px' }}>
               <h2 className="op-title" style={{ fontSize: 16 }}>下一个交易日操作</h2>
               <span className="n">开盘按下面的金额买入（今日结论）；到期持仓收盘卖出</span>
@@ -228,12 +242,6 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 <span className="opbar-k">要卖出</span>
                 <span className={`opbar-v num ${acct.nextSells.length ? 'down' : 'mute'}`}>
                   {acct.nextSells.length} 笔 · {yuan(sellTotal)}
-                </span>
-              </div>
-              <div className="opbar-item">
-                <span className="opbar-k">账户</span>
-                <span className="opbar-v num">
-                  {yuan(acct.value)} · 现金 {yuan(acct.cash)} · 持仓 {acct.positions.length}/{sim?.max_holdings}
                 </span>
               </div>
             </div>
@@ -374,20 +382,6 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 </tbody>
               </table>
             )}
-
-            {/* ============ ② 账户概览 ============ */}
-            <div className="grid g4" style={{ margin: '14px 0 12px' }}>
-              <Stat k="账户总值" v={yuan(acct.value)}
-                n={`本金 ${yuan(acct.capital)} · 净值 ${num(multi, 3)} · 累计 ${pct(acct.totalPnl / (acct.capital || 1))}`} />
-              <Stat k={`持仓市值（${acct.positions.length} 笔）`} v={yuan(acct.mv)}
-                n={`实际投出 ${pct(acct.exposure, 1, false)} · 浮动盈亏 ${acct.floatPnl >= 0 ? '+' : ''}${yuan(acct.floatPnl)}`} />
-              <Stat k="可用现金" v={yuan(acct.cash)}
-                n={`占 ${pct(acct.value > 0 ? acct.cash / acct.value : 0, 1, false)} · `
-                  + (sim?.cash_yield ? `按 ${pct(sim.cash_yield, 2, false)} 逐日计息` : '不计息（按你的口径）')} />
-              <Stat k="已实现盈亏" v={`${acct.realised >= 0 ? '+' : ''}${yuan(acct.realised)}`}
-                n={`已卖出 ${acct.nSells} 笔 · 累计成本 ${yuan(acct.fees)} · 账户最大回撤 ${pct(acct.maxdd, 1, false)}`}
-                tone={acct.realised >= 0 ? 'up' : 'down'} />
-            </div>
 
             {/* ============ ③ 当前持仓 ============ */}
             <div className="colhead" style={{ marginBottom: 6 }}>
