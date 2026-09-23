@@ -45,7 +45,9 @@ import rules as RULES  # noqa: E402
 # 演进：ark-1.2.0-ranking → ark-1.3.0-stage（阶段标注，展示层）
 #       → ark-1.4.0-mature-weight（MATURE 降权落参，信号层口径变更）
 #       → ark-1.5.0-etf-qfq（ETF 份额折算复权落参，结算取价口径变更，见 config.ETF_QFQ）
-ENGINE_VERSION = "ark-1.5.0-etf-qfq"
+#       → ark-1.6.0-exposure-cap（F5 暴露上限落参，组合层口径变更，见
+#         config.RISK_CONTROL.exposure_cap：动量∨环境 cap，下跌年份治理）
+ENGINE_VERSION = "ark-1.6.0-exposure-cap"
 
 
 def config_hash() -> str:

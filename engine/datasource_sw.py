@@ -4,7 +4,11 @@
 来源与理由：
     - 申万指数日K：ak.index_hist_sw（申万宏源官方），比东财 BK 板块更权威，
       覆盖 2004 年至今，含 L1/L2/L3 全层级目录（index_*_info）。
-    - ETF 日K：ak.fund_etf_hist_sina（新浪），前复权，含成交额（元）。
+    - ETF 日K：ak.fund_etf_hist_sina（新浪），不复权，含成交额（元）。
+      注意：是**不复权**口径（已用东财 fund_etf_hist_em(adjust='') 交叉验证
+      逐值一致）。ETF 份额折算（拆分/合并）造成的价格跳变不在数据层处理，
+      由 engine/qfq.py 在加载 ETF 账簿时按参照收益检测并还原——不要在本层
+      擅自改用前复权源，否则 qfq 的断点检测会失去作用对象。
     - 基准指数日K：ak.stock_zh_index_daily（新浪），只有量没有额（amount 置 0，
       特征里 amount 相关维度只做相对比值，且基准不参与量能打分）。
 
@@ -163,7 +167,7 @@ def fetch_etf_daily(secid: str, refresh: bool = False) -> Optional[List[dict]]:
             recs = _sina_records(df, has_amount=True)
             if recs:
                 RS.put("etf", secid, recs, SOURCE_ETF,
-                       note="前复权;amount单位:元,与MIN_DAILY_AMOUNT口径一致")
+                       note="不复权;amount单位:元,与MIN_DAILY_AMOUNT口径一致;折算跳变由qfq.py处理")
                 return recs
         except Exception:
             time.sleep(1.5 * (attempt + 1))

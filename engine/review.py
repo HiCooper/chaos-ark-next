@@ -22,7 +22,7 @@ import config as C  # noqa: E402
 from feature_store import EW_CODE, FeatureStore  # noqa: E402
 from settlement import (  # noqa: E402
     EtfBook, simulate_etf_portfolio, market_phases, stats_by_phase, perf_stats,
-    holding_stats,
+    holding_stats, build_exposure_cap,
 )
 
 ATTR_LABEL = {
@@ -581,6 +581,9 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
 
         RC = C.RISK_CONTROL
         PF = C.PORTFOLIO
+        # F5 暴露上限（2026-09-23 落参）：宽幅熊市/恐慌环境的硬性仓位上限，
+        # 只缩放暴露不改买卖时点；构建与 lab_downyear3 F5 逐位一致（无前视）。
+        cap_series = build_exposure_cap(book)
         pf_etf = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                         max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
                                         risk_parity=RC["risk_parity"],
@@ -590,7 +593,8 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                                         vol_floor=RC["vol_floor"],
                                         cash_yield=RC["cash_yield"],
                                         score_tilt=PF["score_tilt"],
-                                        max_new_per_day=PF["max_new_per_day"])
+                                        max_new_per_day=PF["max_new_per_day"],
+                                        cap_series=cap_series)
         # 对照：未加风控的原始口径（等权 + 满仓），保留以便复核改进幅度
         pf_base = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                          max_holdings=C.CLASSIFY["max_daily_picks"] * 4)

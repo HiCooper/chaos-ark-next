@@ -12,8 +12,14 @@ const TABS = [
   { k: 'lab', label: '实验' },
 ]
 
+// 从 URL hash 解析 tab（如 #/review）：刷新 / 分享链接后仍定位到同一 tab
+function tabFromHash(): string {
+  const h = window.location.hash.replace(/^#\/?/, '')
+  return TABS.some((t) => t.k === h) ? h : 'today'
+}
+
 export default function App() {
-  const [tab, setTab] = useState('today')
+  const [tab, setTab] = useState(tabFromHash)
   const [today, setToday] = useState<any>(null)
   const [review, setReview] = useState<any>(null)
   const [hist, setHist] = useState<any>(null)
@@ -23,6 +29,17 @@ export default function App() {
   // 研判页状态：日历选中的交易日（默认最新），历史日详情按需懒加载并缓存
   const [selected, setSelected] = useState<string>('')
   const [dayCache, setDayCache] = useState<Record<string, any>>({})
+
+  // tab ↔ URL 双向同步：点击切换写入 hash（可前进/后退），手动改 hash 或点浏览器回退也能跟随
+  const switchTab = (k: string) => {
+    setTab(k)
+    if (tabFromHash() !== k) window.location.hash = `/${k}`
+  }
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   const latestDate = today?.date || (hist?.days?.length ? hist.days[hist.days.length - 1].date : '')
 
@@ -76,7 +93,7 @@ export default function App() {
         </div>
         <nav>
           {TABS.map((t) => (
-            <button key={t.k} className={tab === t.k ? 'on' : ''} onClick={() => setTab(t.k)}>
+            <button key={t.k} className={tab === t.k ? 'on' : ''} onClick={() => switchTab(t.k)}>
               {t.label}
             </button>
           ))}

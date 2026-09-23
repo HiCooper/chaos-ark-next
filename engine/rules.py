@@ -158,6 +158,14 @@ def build_rules(settlement: Optional[dict] = None,
         _item("暴露下限", f"{_pct(rc['vol_floor'], 0)}",
               "config.RISK_CONTROL.vol_floor",
               "仓位不得低于此值。这是回撤与年化之间的调节旋钮，敏感性曲线见复盘的取舍表。"),
+        _item("暴露上限（F5）",
+              "max(动量cap, 环境cap)" if rc.get("exposure_cap", {}).get("enabled") else "未启用",
+              "config.RISK_CONTROL.exposure_cap",
+              "下限管高波动、上限管下跌年份：基准 250 日收益 < 0 → 暴露 ≤ 35%；"
+              "前一日环境 PANIC/DEFEND/NEUTRAL/ATTACK → 30%/55%/80%/100%；两者取大"
+              "（任一好转即释放）。全部无前视，不改买卖时点。"
+              "全周期：年化 10.49% → 11.70%、回撤 −35.8% → −25.5%、2022 转正；"
+              "代价：2023/2026 阴跌段年化让约 1~2.6pp。"),
         _item("未投入部分收益", f"{_pct(rc['cash_yield'], 1)} / 年",
               "config.RISK_CONTROL.cash_yield",
               "闲置资金按货币基金口径计息，避免低估空仓期的机会成本。"),

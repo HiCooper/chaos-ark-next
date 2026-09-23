@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { NavChart } from './chart'
 import { Bars, Card, Chip, Marker, MarkerLine, Metric, num, pct } from './ui'
+import { EtfModal, SidEvent } from './etf-modal'
 
 const REGIME_TXT: Record<string, string> = { ATTACK: '进攻', NEUTRAL: '中性', DEFEND: '防守', PANIC: '恐慌' }
 const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
@@ -69,6 +70,16 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const cases = data.cases || {}
   const recent = data.recent || []
   const [basisOpen, setBasisOpen] = useState(false)
+  // 标的走势核验弹窗：点「可交易标的」或折算样本打开，逐笔核对 ETF 的钱算得对不对
+  const [etfModal, setEtfModal] = useState<{ sid: string; focusDate?: string } | null>(null)
+  // 全池份额折算断点清单（web/public/data/etf/_breaks.json，由 engine/build_etf_webdata.py 生成）
+  const [breaks, setBreaks] = useState<any[] | null>(null)
+  useEffect(() => {
+    fetch('data/etf/_breaks.json')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j) => setBreaks(j.breaks || []))
+      .catch(() => setBreaks([]))
+  }, [])
 
   const years = Object.keys(st.by_year || {})
   const phases = (st.by_phase || []).filter((p: any) => p.n > 0)
@@ -81,6 +92,17 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const allBench: number[] = curve.bench || []
   const events: any[] = st.events || []
   const etfNames: Record<string, string> = st.etf_names || {}
+
+  // 选定标的的全部 B/S 事件（B 事件本身不带日期，按曲线索引补上）
+  const sidEvents = useMemo(() => {
+    if (!etfModal) return [] as SidEvent[]
+    const out: SidEvent[] = []
+    for (const e of events) {
+      if (e.sid !== etfModal.sid) continue
+      out.push({ ...e, date: allDates[e.i] })
+    }
+    return out
+  }, [etfModal, events, allDates])
   // 逐日仓位（辅助轴数据源）：invested = 持仓只数/容量 × 波动目标暴露
   const pos = st.position || {}
   const posInvested: number[] = pos.invested || []
@@ -543,7 +565,16 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                   <tr key={i}>
                     <td className="num">{t.buyDate || '—'}</td>
                     <td><b>{t.sw}</b>{t.act === 'AMBUSH' && <span className="muted"> 埋伏</span>}</td>
-                    <td>{t.etf} <span className="muted num">{t.code}</span></td>
+                    <td>
+                      <button
+                        className="linkbtn"
+                        title="查看该 ETF 走势与这笔交易的买卖点标注"
+                        onClick={() => setEtfModal({ sid: t.sid, focusDate: t.buyDate })}
+                      >
+                        {t.etf}
+                      </button>{' '}
+                      <span className="muted num">{t.code}</span>
+                    </td>
                     <td className="num" style={{ textAlign: 'right' }}>{num(t.buyPx, 3)}</td>
                     <td className="num">{t.sellDate}</td>
                     <td className="num" style={{ textAlign: 'right' }}>{num(t.sellPx, 3)}</td>
@@ -561,8 +592,69 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           <div className="note" style={{ marginTop: 8 }}>
             买入价 = 信号次日开盘价；卖出价 = 持有到期日收盘价；净收益已扣双边成本。
             超额为同期相对基准 ETF 的超额。这张表与上方曲线的成交点同源，逐笔可核对。
+            <b>点击「可交易标的」可弹出该 ETF 走势图</b>：买卖点直接标在图上（含原因、权重、
+            名义账本与收益对账），发生过份额拆分的标的还会标出折算日。
           </div>
         </Card>
+      )}
+
+      {/* ==================== 份额折算核验样本 ==================== */}
+      {breaks && breaks.length > 0 && (
+        <Card
+          title="份额折算核验样本（拆分 / 合并）"
+          extra={<span className="muted">共 {breaks.length} 处 · 点击任意一行弹出走势图逐个核验</span>}
+        >
+          <div className="note" style={{ marginBottom: 8 }}>
+            这些 ETF 在样本期内发生过「份额折算」：单位价格按整数倍跳变（如 1 拆 2 当日原始价 −50%），
+            但持有人份额同步翻倍、总价值不变——<b>不应记为盈亏</b>。
+            结算层用「参照收益」（同日行业指数或全池中位数）识别这类价值中性跳变并复权还原
+            （engine/qfq.py，检出阈值 25%）。下面每一处都可以点开走势图，
+            对着「原始市价 vs 复权连续价」的断口，核对该日附近成交的钱是否算对。
+          </div>
+          <div className="tradescroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>折算日</th><th>可交易标的</th>
+                  <th style={{ textAlign: 'right' }}>原始价格跳变</th>
+                  <th style={{ textAlign: 'right' }}>参照真实收益</th>
+                  <th>参照来源</th>
+                  <th style={{ textAlign: 'right' }}>复权因子</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {breaks.map((b, i) => (
+                  <tr key={i} style={{ cursor: 'pointer' }}
+                      onClick={() => setEtfModal({ sid: b.sid, focusDate: b.date })}>
+                    <td className="num">{b.date}</td>
+                    <td><b>{b.name}</b> <span className="muted num">{b.code}</span></td>
+                    <td className="num" style={{ textAlign: 'right', color: (b.raw_ret ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
+                      {pct(b.raw_ret, 1)}
+                    </td>
+                    <td className="num" style={{ textAlign: 'right' }}>{pct(b.ref_ret, 2)}</td>
+                    <td className="muted" style={{ fontSize: 11.5 }}>
+                      {b.ref_src === 'index' ? '行业指数' : '全池中位数'}
+                    </td>
+                    <td className="num" style={{ textAlign: 'right' }}>×{num(b.factor, 4)}</td>
+                    <td><button className="linkbtn">查看走势</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {etfModal && (
+        <EtfModal
+          sid={etfModal.sid}
+          focusDate={etfModal.focusDate}
+          curveDates={allDates}
+          curveNav={allNav}
+          events={sidEvents}
+          onClose={() => setEtfModal(null)}
+        />
       )}
 
       {/* ==================== 执行口径对照 ==================== */}

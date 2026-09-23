@@ -353,6 +353,57 @@ def bench_ma_gate(book: EtfBook, window: int = 200) -> Optional[np.ndarray]:
     return px > ma
 
 
+def build_exposure_cap(book: EtfBook, cfg: Optional[dict] = None,
+                       regime: Optional[dict] = None) -> Optional[np.ndarray]:
+    """F5 暴露上限序列（生产落参版，与 lab_downyear3 的 F5 逐位一致）。
+
+    cap = max(动量cap, 环境cap)。两者取**大** = 任一状态好转即释放——
+    这是机制必需而非调参：取 min（双重保守）会把年化砍到 4~6%
+    （lab_downyear5 R2 参数网格，18 组 max 族全落在 11.45~11.95% 宽平台）。
+
+      - 动量cap：基准 ETF 250 日收益 < 0 -> 上限 momentum_floor(0.35)，否则 1.0
+      - 环境cap：前一日市场环境 PANIC/DEFEND/NEUTRAL/ATTACK -> 0.30/0.55/0.80/1.00
+
+    无前视：动量序列右移一日（第 k 日只用 ≤k-1 收盘价），环境用 dates[k-1]
+    的 regime（build 时已内嵌右移，不再二次移位）。regime 缺失时退化为
+    纯动量 cap。返回 None 表示不启用（关闭或数据不足）。
+    """
+    cfg = cfg if cfg is not None else (C.RISK_CONTROL.get("exposure_cap") or {})
+    if not cfg.get("enabled"):
+        return None
+    sid = book.bench_etf
+    if not sid:
+        return None
+    n = len(book.dates)
+    win = int(cfg.get("momentum_window", 250))
+    floor = float(cfg.get("momentum_floor", 0.35))
+
+    px = np.array([book.close(sid, i) or np.nan for i in range(n)], dtype=float)
+    ok = ~np.isnan(px)
+    if ok.sum() < win + 10:
+        return None
+    idxs = np.where(ok)[0]
+    px = np.interp(np.arange(n), idxs, px[idxs])
+    mom = np.full(n, np.nan)
+    mom[win:] = px[win:] / px[:-win] - 1.0
+    mom_cap = np.where(mom < 0, floor, 1.0)
+    mom_cap[np.isnan(mom)] = 1.0
+    mom_cap = np.concatenate([[mom_cap[0]], mom_cap[:-1]])  # 右移一日
+
+    env_caps = cfg.get("env_caps") or {}
+    if regime is None:
+        path = f"{C.CACHE_DIR}/regime.json"
+        if os.path.exists(path):
+            with open(path) as f:
+                regime = json.load(f)
+    env_cap = np.ones(n)
+    if regime:
+        for k in range(1, n):
+            e = (regime.get(book.dates[k - 1]) or {}).get("regime")
+            env_cap[k] = float(env_caps.get(e, 1.0))
+    return np.maximum(mom_cap, env_cap)
+
+
 def _sigma(book: "EtfBook", sid: str, k: int, window: int = 60) -> float:
     """标的截至第 k-1 日的年化波动（只用已实现数据，无前视）。"""
     vals = [book.close(sid, j) for j in range(max(0, k - window), k)]
@@ -375,6 +426,8 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                            vol_window: int = 60,
                            vol_floor: float = 0.80,
                            floor_series: Optional[np.ndarray] = None,
+                           cap_series: Optional[np.ndarray] = None,
+                           loser_deweight: Optional[dict] = None,
                            entry_gate: Optional[callable] = None,
                            sid_cooldown: Optional[int] = None,
                            sid_cooldown_loss_below: float = 0.0,
@@ -482,6 +535,8 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
     # 跌透的主线接飞刀」——2023 传媒 24 连亏、2026 有色 13 连买的复盘结论）。
     sid_block_until: Dict[str, int] = {}
     blocked_by_cooldown = 0
+    ld_turnover = 0.0          # 当日浮亏降权翻转的换手（权重和口径）
+    ld_cost_total = 0.0        # 全期翻转成本（收益率口径累计）
 
     def _bench_ret(from_i: int, to_i: int) -> Optional[float]:
         """同期基准 ETF 的净收益（同一成本口径），用于单笔超额。"""
@@ -512,7 +567,29 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
             if score_tilt:
                 h["w"] *= max(float(h.get("score") or 50.0), 1.0) ** score_tilt / (50.0 ** score_tilt)
             if c and p:
-                day_rets.append((c / p - 1.0, h["w"]))
+                # 浮亏降权（实验杠杆，默认关闭）：未平仓且浮亏的持仓按因子降权，
+                # 降出的权重按现金收益计。不卖出、不改变持有期与卖出时点，
+                # 只是「浮亏仓位自动减半仓」的连续化——攻击「下跌中死扛到期」。
+                # 无前视：用昨日收盘判定浮亏（今日开盘时已知），当日权重当日生效；
+                # 浮亏收复即自动恢复权重。每次因子翻转按真实单边成本计费。
+                factor = 1.0
+                if (loser_deweight is not None and h.get("buy_price")
+                        and h["buy_i"] < k and h["buy_price"] > 0):
+                    ur = p / h["buy_price"] - 1.0
+                    if ur < loser_deweight.get("deep_threshold", -0.10):
+                        factor = float(loser_deweight.get("deep_factor", 0.25))
+                    elif ur < loser_deweight.get("threshold", 0.0):
+                        factor = float(loser_deweight.get("factor", 0.5))
+                if loser_deweight is not None:
+                    pf_prev = h.get("ld_factor", 1.0)
+                    if factor != pf_prev:
+                        ld_turnover += abs(factor - pf_prev) * h["w"]
+                    h["ld_factor"] = factor
+                if factor < 1.0:
+                    day_rets.append((c / p - 1.0, h["w"] * factor))
+                    day_rets.append((rf, h["w"] * (1.0 - factor)))
+                else:
+                    day_rets.append((c / p - 1.0, h["w"]))
             if h["end"] > k:          # 未到期，继续持有
                 h2 = dict(h)
                 new_holdings.append(h2)
@@ -530,8 +607,12 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                     "bpx": round(bpx, 4) if bpx else None,
                     "h": h.get("horizon"), "a": h.get("action"),
                     "why": h.get("reason"),
+                    "gross": round(gross, 5) if gross is not None else None,
                     "ret": round(net, 5) if net is not None else None,
                     "ex": round(net - bre, 5) if (net is not None and bre is not None) else None,
+                    # 卖出日的组合权重（风险平价 × 分数加权，日度重算口径）。
+                    # 前端核验用：与建仓 w 对比可看出权重随 σ 漂移。
+                    "w": round(float(h.get("w") or 0), 4),
                 })
                 # 亏损冷却触发：该 sid 禁入至 k + cooldown
                 if (sid_cooldown is not None and net is not None
@@ -580,6 +661,8 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                     "price": round(o, 4), "h": item.get("horizon"),
                     "a": item.get("action"),
                     "sc": round(float(item.get("score") or 0), 1),
+                    # 建仓权重（1/σ × 分数加权）：前端展示「这笔钱占组合多少」
+                    "w": round(float(holdings[-1]["w"]), 4),
                 })
                 c = book.close(sid, k)
                 if c:
@@ -598,17 +681,33 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
         else:
             r_raw = 0.0
 
+        # 浮亏降权的翻转成本：每次因子变动 = |Δfactor| 比例的真实调仓，
+        # 按单边成本（佣金+滑点）计费，从当日组合收益中扣除
+        if loser_deweight is not None and ld_turnover > 0:
+            raw_w = sum(h["w"] for h in holdings) or 1.0
+            r_raw -= ld_turnover / raw_w * (
+                C.TRADING_COST["commission"] + C.TRADING_COST["slippage"])
+            ld_cost_total += ld_turnover / raw_w * (
+                C.TRADING_COST["commission"] + C.TRADING_COST["slippage"])
+            ld_turnover = 0.0
+
         # 4) 波动目标：高波动期按比例降仓，剩余部分计现金收益（无前视）
         #    floor_series：逐日暴露下限（长度=len(dates)，可来自趋势/回撤等状态变量）。
         #    传入时覆盖固定 vol_floor——这是「连续降暴露」类风控的统一入口，
         #    只改变暴露水平，不改变任何买卖时点与标的。floor_series[k] 必须只依赖
         #    第 k 日之前（≤k-1）可得的信息，由调用方保证。
+        #    cap_series：逐日暴露上限（与 floor 同长度同无前视约束）。floor 只能
+        #    「允许」波动目标降得更低，在阴跌年份（波动不高、vol_target 不触发）
+        #    完全不起作用；cap 反向强制总暴露不超过上限，是「下跌年份压暴露」
+        #    的有效杠杆。cap 可低于 floor：cap 语义是硬上限，优先生效。
         expo = 1.0
         floor_k = float(floor_series[k]) if floor_series is not None else vol_floor
         if vol_target is not None and len(ret_hist) >= 20:
             sig = float(np.std(ret_hist[-vol_window:]) * np.sqrt(252))
             if sig > 1e-6:
                 expo = float(np.clip(vol_target / sig, floor_k, 1.0))
+        if cap_series is not None:
+            expo = float(np.clip(min(expo, float(cap_series[k])), 0.0, 1.0))
         r = expo * r_raw + (1.0 - expo) * rf
         cur *= (1.0 + r)
         ret_hist.append(r)
@@ -657,6 +756,9 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
     stats["vol_target"] = vol_target
     stats["vol_floor"] = vol_floor if vol_target is not None else None
     stats["floor_series"] = floor_series is not None
+    stats["cap_series"] = cap_series is not None
+    stats["loser_deweight"] = bool(loser_deweight)
+    stats["ld_cost_drag"] = round(ld_cost_total, 5)
     stats["avg_exposure"] = round(float(np.mean(exposure_log)), 3) if exposure_log else None
     stats["avg_holdings"] = round(float(np.mean(hold_count)), 2) if hold_count else None
     # 实际投入比例 = 持仓数/容量 × 波动目标暴露系数（前端辅助轴直接用这一列）
