@@ -130,7 +130,8 @@ export default function App() {
 
         {!err && today && tab === 'book' && (
           currentDay
-            ? <MyBook data={currentDay} days={hist?.days || []} selected={selected} onSelect={setSelected} />
+            ? <MyBook data={currentDay} days={hist?.days || []} selected={selected} onSelect={setSelected}
+              generatedAt={hist?.generated_at} />
             : <div className="loading">装载 {selected} 研判数据</div>
         )}
 

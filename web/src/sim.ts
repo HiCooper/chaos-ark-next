@@ -418,3 +418,30 @@ export function tradingDays(sim: SimData, from: string, to: string): number | nu
   const a = idxOf[from], b = idxOf[to]
   return a === undefined || b === undefined ? null : b - a
 }
+
+/** 本地时区的今天（YYYY-MM-DD）——不能用 toISOString（那是 UTC，会差一天） */
+export function localToday(now: Date = new Date()): string {
+  const m = `${now.getMonth() + 1}`.padStart(2, '0')
+  const d = `${now.getDate()}`.padStart(2, '0')
+  return `${now.getFullYear()}-${m}-${d}`
+}
+
+export type ExecState = 'before' | 'today' | 'stale' | 'none'
+
+/**
+ * 页面该以什么口吻说话（决定"操作单"是"今天"还是"下一交易日"）：
+ *   before —— 执行日还没到（结论日的当晚/周末）：现在就能把单子定下来
+ *   today  —— 执行日当天（盘中或收盘后）：这就是"今天要做什么"
+ *   stale  —— 执行日已过、但下一次结论还没出（数据滞后）：给出明确的滞后警示
+ */
+export function execStateOf(execDay: string | null | undefined, clientToday: string): ExecState {
+  if (!execDay) return 'none'
+  if (execDay > clientToday) return 'before'
+  if (execDay === clientToday) return 'today'
+  return 'stale'
+}
+
+/** 两个 ISO 日期相差的自然日（b - a） */
+export function daysBetweenISO(a: string, b: string): number {
+  return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000)
+}

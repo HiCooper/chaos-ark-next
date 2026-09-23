@@ -661,3 +661,25 @@ td.buyamt { font-weight: 700; font-size: 13px; }
   border-left: 3px solid #e0a800; border-radius: 8px;
 }
 .warnbar code { background: rgba(0,0,0,.05); padding: 0 3px; border-radius: 3px; }
+
+/* 「我的持仓」时间轴：结论日 → 执行日 → 下一份结论 */
+.tstrip {
+  display: flex; flex-wrap: wrap; gap: 10px; margin: 2px 0 12px;
+  padding: 10px 12px; background: var(--bg, #f7f8fa);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.tstep { display: flex; flex-direction: column; gap: 2px; min-width: 190px; flex: 1 1 190px; }
+.tstep + .tstep { padding-left: 12px; border-left: 1px solid var(--line); }
+.tstep .tk { font-size: 11px; color: var(--ink-3); }
+.tstep .tv { font-size: 15px; font-weight: 700; }
+.tstep .tn { font-size: 11px; color: var(--ink-3); line-height: 1.5; }
+.tstep.done .tv { color: var(--ink-2); }
+.tstep.next .tv { color: var(--accent, #1f3a8a); }
+.tstep.now { position: relative; }
+.tstep.now .tv { color: var(--up, #c62828); }
+.tstep.now::after {
+  content: '今天'; position: absolute; right: 0; top: 0;
+  font-size: 10px; padding: 1px 5px; border-radius: 8px;
+  background: var(--up, #c62828); color: #fff;
+}
+.tstep.late .tv { color: #b45309; }

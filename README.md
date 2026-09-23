@@ -33,8 +33,9 @@ web/             React + Vite 前端（纯静态）
   src/App.tsx      五个标签页：今日研判 / 我的持仓 / 复盘 / 引擎 / 实验
   src/Calendar.tsx  历史结论热力图（交易日历）
   src/chart.tsx    ECharts 净值曲线（缩放 + 每日结论带 + B/S 标记）
-  src/MyBook.tsx   「我的持仓」：先给「今天要做什么」（买入/卖出清单 + 排队候选），
-                   再给账户总值 / 现金 / 持仓市值 / 浮盈与逐笔持仓
+  src/MyBook.tsx   「我的持仓」：顶部时间轴（结论日 → 执行日 → 下一份结论）+ 执行日操作单
+                   （买入金额/约合手数、卖出金额/参考盈亏）、账户总值/现金/市值/浮盈、
+                   逐笔持仓（买入日倒序）、结论日已成交对账；数据滞后时明确警示
   src/sim.ts       影子账户（档 2）：把引擎的资金记账规则逐日重放，消费 data/sim.json
   public/data/     引擎产出的 JSON（history / today / review / experiments / sim / day/ / etf/）
 
