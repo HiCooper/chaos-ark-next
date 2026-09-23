@@ -56,6 +56,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const o = data.overview || {}
   const st = data.settlement || {}
   const sts = st.stats || {}
+  const ry = (sts as any).rolling_1y || null
   const curve = st.curve || {}
   const rc = st.risk_control || {}
   const floorScan: any[] = rc.floor_scan || []
@@ -309,8 +310,29 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             n={`跑赢基准口径 · 绝对盈利胜率 ${pct(st.win_rate_abs, 2, false)}`}
             tone={(st.win_rate_excess || 0) >= 0.5 ? 'up' : undefined} />
           <Metric k="Calmar / 夏普" v={`${num(sts.calmar, 2)} / ${num(sts.sharpe, 2)}`}
-            n={`月度胜率 ${pct(sts.monthly_win_rate, 2, false)} · 波动 ${pct(sts.vol, 2, false)}`} />
+            n={`年化 ÷ |最大回撤|：每承受 1 份回撤换到的年化 · 月度胜率 ${pct(sts.monthly_win_rate, 2, false)}`} />
         </div>
+
+        {ry && (
+          <div style={{ marginBottom: 12 }}>
+            <div className="grid g4">
+              <Metric k="滚动一年 · 中位收益" v={pct(ry.median)}
+                n={`均值 ${pct(ry.mean)} · 样本 ${ry.n} 个入市日`} tone={(ry.median || 0) >= 0 ? 'up' : 'down'} />
+              <Metric k="滚动一年 · 胜率" v={pct(ry.win_rate, 2, false)}
+                n="任意交易日入市、持有 252 个交易日为正的比例" tone={(ry.win_rate || 0) >= 0.5 ? 'up' : 'down'} />
+              <Metric k="滚动一年 · 最差 5%（p5）" v={pct(ry.p5)}
+                n={`95% 的入市时点持有一年好于该值 · 最好 ${pct(ry.p95)}`} tone="down" />
+              <Metric k="滚动一年 · 最差" v={pct(ry.worst)}
+                n={`历史最倒霉时点的持有一年结果 · 最好 ${pct(ry.best)}`} tone="down" />
+            </div>
+            <div className="note" style={{ marginTop: 8 }}>
+              把区间内<b>每一个交易日</b>都当作假想入市日、模拟持有一年（≈252 个交易日），
+              得到分布后取中位/胜率/分位数——比单一年化更接近「我不小心在半山腰进场会怎样」的真实体验，
+              也不依赖「从窗口起点满仓滚动」的隐含假设。注意：这是历史模拟（T+1 开盘成交、
+              双边成本 {pct(0.0027)}），不含样本外折扣，不构成收益承诺。
+            </div>
+          </div>
+        )}
 
         <div className="grid g4" style={{ marginBottom: 12 }}>
           <Metric k="累计收益" v={pct(sts.total_return)} tone={(sts.total_return || 0) >= 0 ? 'up' : 'down'} />

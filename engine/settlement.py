@@ -233,6 +233,22 @@ def perf_stats(nav: np.ndarray, dates: List[str],
     mret = {m: float(np.prod([1 + x for x in v]) - 1) for m, v in monthly.items()}
     mpos = float(np.mean([1 if v > 0 else 0 for v in mret.values()])) if mret else None
 
+    # 滚动一年分布：每个交易日作为假想入市日、持有 252 个交易日的收益分布。
+    # 回答「任意时点进场持有一年会怎样」——比单一 CAGR 更接近真实体验。
+    roll = None
+    if nav.size > 252 + 10:
+        rr = nav[252:] / nav[:-252] - 1.0
+        roll = {
+            "n": int(rr.size),
+            "mean": round(float(rr.mean()), 4),
+            "median": round(float(np.median(rr)), 4),
+            "win_rate": round(float((rr > 0).mean()), 3),
+            "p5": round(float(np.percentile(rr, 5)), 4),
+            "p95": round(float(np.percentile(rr, 95)), 4),
+            "worst": round(float(rr.min()), 4),
+            "best": round(float(rr.max()), 4),
+        }
+
     out = {
         "total_return": round(total, 4),
         "cagr": round(cagr, 4),
@@ -244,6 +260,7 @@ def perf_stats(nav: np.ndarray, dates: List[str],
         "sortino": round(sortino, 3) if sortino is not None else None,
         "calmar": round(calmar, 3) if calmar is not None else None,
         "monthly_win_rate": round(mpos, 3) if mpos is not None else None,
+        "rolling_1y": roll,
         "months": len(mret),
         "days": int(nav.size),
         "years": round(years, 2),
