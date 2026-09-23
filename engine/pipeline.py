@@ -44,7 +44,8 @@ import rules as RULES  # noqa: E402
 # 它同时是 day/<date>.json 的有效性标记（不匹配即失效 → 全量重放）。
 # 演进：ark-1.2.0-ranking → ark-1.3.0-stage（阶段标注，展示层）
 #       → ark-1.4.0-mature-weight（MATURE 降权落参，信号层口径变更）
-ENGINE_VERSION = "ark-1.4.0-mature-weight"
+#       → ark-1.5.0-etf-qfq（ETF 份额折算复权落参，结算取价口径变更，见 config.ETF_QFQ）
+ENGINE_VERSION = "ark-1.5.0-etf-qfq"
 
 
 def config_hash() -> str:
@@ -75,19 +76,20 @@ def panel_fingerprint(panel: dict) -> str:
 def load_etf_book() -> Optional[ST.EtfBook]:
     """加载 ETF 账簿（真实结算用）。缺失时返回 None，收益退化为信号口径。
 
-    ARK_QFQ=1 时先做份额折算复权（engine/qfq.py）：面板是不复权价，ETF 发生
-    份额折算（拆分/合并）时价格按整数倍跳变而持有人价值不变，不复权直接算收益
-    会记成 ±50%~+220% 的虚假盈亏。生产默认为关（未确认前不改基线口径）。
+    结算取价口径由 config.ETF_QFQ 决定（2026-09-23 确认启用）：面板存不复权价，
+    ETF 发生份额折算（拆分/合并）时价格按整数倍跳变而持有人价值不变，不复权直接
+    算收益会记成 ±50%~+220% 的虚假盈亏。L0 原始层不动，仅在加载账簿时还原。
+    对照实验时用环境变量 ARK_QFQ=0 临时关闭。
     """
     path = f"{C.CACHE_DIR}/etf_panel.json"
     if not os.path.exists(path):
         print("      [warn] 未找到 etf_panel.json，收益将只按行业指数口径计算")
         return None
     panel = ST.load_etf_panel(path)
-    if os.environ.get("ARK_QFQ") == "1":
+    if C.ETF_QFQ:
         import qfq
         sw_panel = DS.load_panel() if os.path.exists(f"{C.CACHE_DIR}/panel.json") else None
-        panel, rep = qfq.apply_qfq(panel, sw_panel, verbose=False)
+        panel, rep = qfq.apply_qfq(panel, sw_panel, verbose=False, thresh=C.QFQ_BREAK_THRESH)
         n = sum(len(v) for v in rep.values())
         print(f"      [qfq] 份额折算复权已启用：修正 {n} 处断点 / {len(rep)} 只 ETF")
     return ST.EtfBook(panel)

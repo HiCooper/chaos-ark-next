@@ -724,6 +724,10 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                 f"持有建议周期后收盘卖出；双边成本 {C.ROUND_TRIP_COST*100:.2f}%"
                 "（佣金万二 + 滑点万五，ETF 免印花税）。"
                 "ETF 上市之前的行业不参与结算，不用行业指数回填。"
+                + ("结算取价已做 ETF 份额折算复权（拆分/合并等价值中性事件不记为盈亏，"
+                   f"检出阈值 {C.QFQ_BREAK_THRESH:.0%}，见 engine/qfq.py）。"
+                   if C.ETF_QFQ else "")
+                +
                 f"主口径含组合风控：持仓按 1/σ 分配风险预算"
                 f"（σ 用 {RC['rp_window']} 日已实现波动），"
                 f"组合已实现波动高于 {RC['vol_target']:.0%} 时按比例降仓、"

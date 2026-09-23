@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-22 18:50",
-  "baseline_version": "ark-1.4.0-mature-weight",
-  "baseline_metrics": { "cagr": 0.0959, "maxdd": -0.3575, "sharpe": 0.567, "note": "申万官方+新浪数据源基线（2016 起），含 MATURE 降权 w=0.7" },
+  "generated_at": "2026-09-23 10:45",
+  "baseline_version": "ark-1.5.0-etf-qfq",
+  "baseline_metrics": { "cagr": 0.1048, "maxdd": -0.3575, "sharpe": 0.608, "note": "申万官方+新浪数据源基线（2016 起），含 MATURE 降权 w=0.7；2026-09-23 起含 ETF 份额折算复权（etf-share-adjust 落参，数据正确性修复，非策略改动）" },
   "principles": {
     "goals": [
-      "提升年化收益（基准 9.59%）",
+      "提升年化收益（基准 10.48%）",
       "降低最大回撤（基准 -35.8%）"
     ],
     "rules": [
@@ -65,7 +65,7 @@
       "title": "ETF 面板份额折算未复权（数据缺陷发现与修复模块）",
       "layer": "数据层（L1 面板 / 结算取价）",
       "vs": "基准 version: ark-1.4.0-mature-weight（年化 9.59% / 回撤 -35.75%）",
-      "status": "待确认。修复模块已交付，生产默认关闭；因改变结算口径，按协议需 boss 确认后再写入 config 显式节 + bump ENGINE_VERSION 才启用",
+      "status": "已采用。2026-09-23 boss 确认，按协议落参：写入 config 显式节 + ENGINE_VERSION bump + 全量重放（见基准升级 ark-1.5.0-etf-qfq）",
       "hypothesis": "ETF 发生份额折算（拆分/合并）时价格按整数倍跳变、持有人价值不变；面板若存不复权价，直接算收益就会记成假的 ±50%~+220%。起因：2024 年池内出现新能源 ETF +213.5%、房地产 ETF +183.3% 的异常收益，怀疑是折算而非真实行情。",
       "params": [
         { "k": "检测规则", "v": "|ETF 当日收益 − 参照收益| > 25% 即视为折算断点", "note": "参照优先取申万行业指数（行业指数无折算事件），缺失时退化为当日全池 ETF 收益中位数" },
@@ -83,8 +83,35 @@
         "drawdown": "→ 不变"
       },
       "robustness": "校验链（四重交叉验证）：① 面板 OHLC 与成交额/成交量反算均价自洽 ✅（排除字段错乱）；② 与 L0 原始层 data/raw/etf/*.json 逐条一致 ✅（原始数据干净、有序、无重复）；③ 与东财 fund_etf_hist_em(adjust='') 逐值交叉验证完全相同 ✅ → 确认是「面板存不复权价」这个口径选择，而非数据损坏；④ 以申万行业指数（本身无折算事件）为参照独立验证 ✅。局限如实披露：影响面仅 4 笔交易、正负各半，样本极薄，不能当作策略改进；新能源 ETF 那处因参照退化为全池中位数，精度低于行业指数参照；另 34 处断点中多数落在 ETF 上市极早期或无持仓期间，对组合无影响。",
-      "conclusion": "确认为既有数据缺陷（非本轮引入）。修复模块 engine/qfq.py 已交付，L0 原始层不动，生产默认关闭（ARK_QFQ=1 启用）。由于它改变结算口径，按协议需 boss 确认后写入 config 显式节并 bump ENGINE_VERSION，再做全量重跑与基线披露。",
-      "artifacts": ["engine/qfq.py", "engine/pipeline.py（load_etf_book 支持 ARK_QFQ）", "cache/lab_gate2024.json（B0 变体）"]
+      "conclusion": "确认为既有数据缺陷（非本轮引入），已采用。修复模块 engine/qfq.py，L0 原始层不动。2026-09-23 经 boss 确认落参：口径开关从临时环境变量 ARK_QFQ 提升为 config.ETF_QFQ 显式节（默认启用，ARK_QFQ=0 仅留作对照实验），并 bump 至 ark-1.5.0-etf-qfq 全量重放。基线年化 9.59%→10.48%、回撤 -35.75% 不变。收益改善属数据正确性修复，不计入策略能力。",
+      "artifacts": ["engine/qfq.py", "engine/config.py (ETF_QFQ / QFQ_BREAK_THRESH)", "engine/pipeline.py (load_etf_book 读 config.ETF_QFQ)", "engine/rules.py (规则面板口径条目)", "engine/review.py (结算 basis 披露)", "cache/lab_gate2024.json（B0 变体）"]
+    },
+    {
+      "id": "baseline-1.5.0",
+      "date": "2026-09-23",
+      "title": "基准升级：ark-1.4.0-mature-weight → ark-1.5.0-etf-qfq",
+      "layer": "基准版本管理（非实验，是落参动作的记录）",
+      "vs": "上一基准 ark-1.4.0-mature-weight（年化 9.59% / 回撤 -35.75% / Sharpe 0.567 / 信号胜率 44.70%）",
+      "status": "已采用",
+      "hypothesis": "把已获 boss 确认的数据正确性修复「ETF 份额折算复权」按基准 version 升级协议落地，并如实披露新基线。改动只落在结算取价层，不改信号层任何系数。",
+      "params": [
+        { "k": "ETF_QFQ", "v": "true（写入 config 显式节）", "note": "由临时环境变量 ARK_QFQ 提升为配置项；ARK_QFQ=0 保留作对照实验开关" },
+        { "k": "QFQ_BREAK_THRESH", "v": "0.25", "note": "判定折算断点的偏离阈值，实测检出 34 处 / 29 只 ETF" },
+        { "k": "ENGINE_VERSION", "v": "ark-1.4.0-mature-weight → ark-1.5.0-etf-qfq", "note": "结算口径变更，day/*.json 全部失效 → 全量重放" }
+      ],
+      "results": [
+        { "label": "年化收益", "note": "9.59% → 10.48%（+0.89pp）" },
+        { "label": "最大回撤", "note": "-35.75% → -35.75%（不变；断点分布与回撤区间不重叠）" },
+        { "label": "Sharpe / 波动", "note": "0.567 → 0.608；年化波动 19.50% → 19.55%" },
+        { "label": "累计收益", "note": "157.1% → 179.4%" },
+        { "label": "信号胜率", "note": "44.70% → 47.70%（+3.0pp）。结算事件数不变（696 笔），变化全部来自取价修正，非新增/删除交易" },
+        { "label": "逐年（旧 → 新）", "note": "2026 -9.5%→-2.5% (+7.0)、2021 39.5%→40.8% (+1.3)；其余 9 个年份变动 <0.05pp。影响集中在 2026 与 2021，与折算断点分布一致" },
+        { "label": "在册持仓修正", "note": "32 笔持仓中 1 笔估值变化：数字芯片设计（半导体ETF国联安 1.512480，2026-06-12 建仓）-53.0% → -9.5%，系该 ETF 期间份额折算造成的假亏" }
+      ],
+      "goals": { "annualized": "↑ +0.89pp（数据正确性修复，不计入策略能力）", "drawdown": "→ 不变" },
+      "robustness": "落参后的生产实测与实验 gate-2024 的 B0 变体逐项吻合（年化 10.48% / 回撤 -35.75% / 胜率 47.7% 完全相同），重放确定性成立。数据窗口不变（面板末端仍为 2026-09-21），L0 原始层 write-once 未动，故新旧基线逐项可比。边界如实记录：影响面 4 笔已结算交易 + 1 笔在册持仓，正负各半，样本极薄；新能源 ETF 那处参照退化为全池中位数，精度低于行业指数参照；34 处断点多数落在 ETF 上市极早期或无持仓期间，对组合无影响。",
+      "conclusion": "已采用。协议四步齐备：① 参数入 config 显式节（ETF_QFQ / QFQ_BREAK_THRESH）；② ENGINE_VERSION bump；③ 全量重放 2598 天；④ 基线数字与代价披露，同步更新结算 basis 文案与规则面板口径条目。",
+      "artifacts": ["engine/config.py", "engine/pipeline.py (ENGINE_VERSION)", "engine/qfq.py", "engine/rules.py", "engine/review.py", "web/public/data/review.json"]
     },
     {
       "id": "baseline-1.4.0",

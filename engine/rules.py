@@ -237,6 +237,11 @@ def build_rules(settlement: Optional[dict] = None,
         _item("单笔往返成本", f"{C.ROUND_TRIP_COST*100:.2f}%",
               "= 2 × (佣金 + 滑点)",
               "买卖各扣一次，所有收益数字均已扣除该成本。"),
+        _item("ETF 份额折算复权", "已启用" if C.ETF_QFQ else "未启用",
+              "config.ETF_QFQ",
+              "ETF 拆分/合并会让单位价格按整数倍跳变而持有人价值不变。结算取价时"
+              f"检测这类断点（偏离参照收益超 {_pct(C.QFQ_BREAK_THRESH, 0, True)}）并按参照还原，"
+              "价值中性事件不记为盈亏；L0 原始数据不动。"),
         _item("「对」的判定线", f"相对基准超额 ≥ {_pct(rv['outperf_win'], 0, True)}",
               "config.REVIEW.outperf_win",
               "结论评估的胜率口径：跑赢主基准（沪深300）超过该幅度记为「对」。"),
