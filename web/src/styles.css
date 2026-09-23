@@ -661,3 +661,6 @@ td.buyamt { font-weight: 700; font-size: 13px; }
   border-left: 3px solid #e0a800; border-radius: 8px;
 }
 .warnbar code { background: rgba(0,0,0,.05); padding: 0 3px; border-radius: 3px; }
+
+/* 「我的持仓」下一个交易日操作标题：红色加粗 */
+.op-title { color: var(--up, #c62828); font-weight: 700; }

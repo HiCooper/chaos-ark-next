@@ -138,16 +138,16 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
     if (!acct || !started) return ''
     if (!acct.nextDate) return `${date} 之后没有下一个交易日的数据。`
     if (acct.nextBlocked === 'no_candidates') {
-      return `${date} 的结论里没有可交易的新建候选，${acct.nextDate} 不买。`
+      return `今日结论里没有可交易的新建候选，下一交易日不买。`
     }
     if (acct.nextBlocked === 'no_slots') {
-      return `${acct.nextDate} 开盘时槽位已满（${sim?.max_holdings}/${sim?.max_holdings} 笔）`
+      return `下一交易日开盘时槽位已满（${sim?.max_holdings}/${sim?.max_holdings} 笔）`
         + (nextFree ? `，最早 ${nextFree} 有持仓到期腾位，之后才会新建。` : '，要等持仓到期腾位。')
     }
     if (acct.nextBlocked === 'no_cash') {
-      return `${acct.nextDate} 开盘可用现金不足单笔预算的 5%，系统按规则跳过（绝不卖出腾挪）。`
+      return `下一交易日开盘可用现金不足单笔预算的 5%，系统按规则跳过（绝不卖出腾挪）。`
     }
-    return `${acct.nextDate} 没有买入。`
+    return `下一交易日没有买入。`
   })()
 
   // 结论日当天实际成交（对账用）
@@ -206,18 +206,15 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
           <>
             {execState === 'stale' && (
               <div className="muted small" style={{ marginBottom: 8 }}>
-                数据截至 {date}：下面是 <b>{execDay}</b> 的操作，已经过期（落后的几天还没出结论）——
+                数据截至 {date}：上面这份「下一个交易日操作」已经过期（落后的交易日还没出结论）——
                 请在收盘后运行 <code>python3 engine/ark.py daily</code> 更新。
               </div>
             )}
 
             {/* ============ ① 操作单：执行日的买入 / 卖出 ============ */}
             <div className="colhead" style={{ margin: '12px 0 6px' }}>
-              <h2 style={{ fontSize: 16 }}>{execDay} 的操作</h2>
-              <span className="n">
-                买入 = <b>{date}</b> 收盘的结论，在 <b>{execDay} 开盘</b>成交；
-                卖出 = <b>{execDay}</b> 到期的持仓，在 <b>{execDay} 收盘</b>成交
-              </span>
+              <h2 className="op-title" style={{ fontSize: 16 }}>下一个交易日操作</h2>
+              <span className="n">开盘按下面的金额买入（今日结论）；到期持仓收盘卖出</span>
             </div>
 
             <div className="opbar">
@@ -245,7 +242,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
             <div className="colhead" style={{ margin: '10px 0 6px' }}>
               <h2 style={{ fontSize: 15 }}>买入（{acct.nextBuys.length} 笔）</h2>
               <span className="n">
-                {date} 的结论 · {execDay} 开盘按金额买入；现金不够就少买，绝不卖出腾挪
+                下一交易日开盘按金额买入；现金不够就少买，绝不卖出腾挪
               </span>
             </div>
             {acct.nextBuys.length === 0 ? (
@@ -287,10 +284,10 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
             {/* —— 卖出 —— */}
             <div className="colhead" style={{ margin: '10px 0 6px' }}>
               <h2 style={{ fontSize: 15 }}>卖出（{acct.nextSells.length} 笔）</h2>
-              <span className="n">{execDay} 到期的持仓，{execDay} 收盘卖出；金额按 {date} 收盘价估算</span>
+              <span className="n">下一交易日到期的持仓，收盘卖出；金额按最新收盘价估算</span>
             </div>
             {acct.nextSells.length === 0 ? (
-              <div className="muted small" style={{ padding: '2px 0 10px' }}>{execDay} 没有到期持仓，不用卖。</div>
+              <div className="muted small" style={{ padding: '2px 0 10px' }}>下一交易日没有到期持仓，不用卖。</div>
             ) : (
               <table style={{ marginBottom: 12 }}>
                 <thead>
@@ -454,16 +451,15 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
 
             {/* —— 结论日当天已成交（对账，不需要操作） —— */}
             <div className="colhead" style={{ margin: '12px 0 6px' }}>
-              <h2 style={{ fontSize: 14 }}>
-                对账：{date}{execState === 'today' ? '（上一交易日）' : ''}已成交（{todayExecuted} 笔）
-              </h2>
+              <h2 style={{ fontSize: 14 }}>对账 · 当日已成交（{todayExecuted} 笔）</h2>
               <span className="n">
-                {date} 开盘买入 {acct.todayBuys.length} 笔（来自 {acct.todaySignalDate || '—'} 的结论）、
-                收盘卖出 {acct.todaySells.length} 笔，合计买入 {yuan(todayBuyTotal)} / 卖出 {yuan(todaySellTotal)}（已实现 {todaySellPnl >= 0 ? '+' : ''}{yuan(todaySellPnl)}）
+                当日开盘买入 {acct.todayBuys.length} 笔、收盘卖出 {acct.todaySells.length} 笔，
+                合计买入 {yuan(todayBuyTotal)} / 卖出 {yuan(todaySellTotal)}
+                （已实现 {todaySellPnl >= 0 ? '+' : ''}{yuan(todaySellPnl)}）
               </span>
             </div>
             {todayExecuted === 0 ? (
-              <div className="muted small" style={{ padding: '2px 0 4px' }}>{date} 没有成交。</div>
+              <div className="muted small" style={{ padding: '2px 0 4px' }}>当日没有成交。</div>
             ) : (
               <div className="tradescroll">
                 <table style={{ marginBottom: 4 }}>
