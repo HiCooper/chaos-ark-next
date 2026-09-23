@@ -422,6 +422,20 @@ def build_exposure_cap(book: EtfBook, cfg: Optional[dict] = None,
     return np.maximum(mom_cap, env_cap)
 
 
+def plan_w(book: "EtfBook", sid: str, buy_i: int, score: Optional[float],
+           risk_parity: bool, rp_window: int, score_tilt: float) -> float:
+    """建仓权重 w = 1/σ × (综合分/50)^score_tilt，与 step 2 建仓时的算法逐位一致。
+
+    独立成函数是为了让「按本金换算」的导出复用同一口径——前端只需要原始 w，
+    占比 = 暴露系数 × w / Σw，不需要自己重算 σ。
+    """
+    sig = _sigma(book, sid, buy_i, rp_window) if risk_parity else 0.25
+    w = (1.0 / max(sig, 0.05)) if risk_parity else 1.0
+    if score_tilt:
+        w *= max(float(score or 50.0), 1.0) ** score_tilt / (50.0 ** score_tilt)
+    return w
+
+
 def _sigma(book: "EtfBook", sid: str, k: int, window: int = 60) -> float:
     """标的截至第 k-1 日的年化波动（只用已实现数据，无前视）。"""
     vals = [book.close(sid, j) for j in range(max(0, k - window), k)]
@@ -433,9 +447,411 @@ def _sigma(book: "EtfBook", sid: str, k: int, window: int = 60) -> float:
     return sig if sig > 1e-4 else 0.25
 
 
+def simulate_cash_account(book: EtfBook, trades: List[dict],
+                          start_date: Optional[str] = None,
+                          max_holdings: int = 32,
+                          initial_capital: float = 1.0,
+                          target_positions: Optional[int] = None,
+                          max_new_per_day: Optional[int] = None,
+                          risk_parity: bool = False,
+                          rp_window: int = 60,
+                          score_tilt: float = 0.0,
+                          vol_target: Optional[float] = None,
+                          vol_window: int = 60,
+                          vol_floor: float = 0.80,
+                          floor_series: Optional[np.ndarray] = None,
+                          cap_series: Optional[np.ndarray] = None,
+                          entry_gate: Optional[callable] = None,
+                          sid_cooldown: Optional[int] = None,
+                          sid_cooldown_loss_below: float = 0.0,
+                          market_gate: bool = False,
+                          gate_window: int = 200,
+                          max_per_sid: Optional[int] = None,
+                          cash_yield: float = 0.010,
+                          end_date: Optional[str] = None) -> dict:
+    """**有限资金池的可执行账户（主口径）**：净值由现金账逐日记账产生。
+
+    与"用公式给净值"的旧口径的根本区别——这里**没有每日再平衡**。账户只有：
+      · 初始本金一笔钱，之后**卖出所得是唯一资金来源**；
+      · 建仓在 T+1 开盘，金额同时受「预算」与「可用现金」约束；
+      · 卖出只在规则允许时发生（默认只有持有到期），所得现金供后续建仓；
+      · 未投入的现金按 cash_yield 计息。
+    持仓权重一旦建立就**随价格自由漂移**，不再被拉回目标。因此：
+      · 1/σ 与分数倾斜只决定「建仓时的预算大小」；
+      · 波动目标 / 暴露上限只决定「建仓预算的闸门」，**无法凭空降低存量暴露**
+        （要降必须显式卖出，本口径不采用）。
+
+    资金分配（逐笔）：
+        K   = target_positions（目标持仓笔数；None → max_holdings）
+        wᵢ  = 建仓时点的 (1/σᵢ) × (综合分ᵢ/50)^score_tilt
+        预算 = V_prev × expo × (wᵢ / w̄) / K      # w̄ = 在场持仓∪今日候选 的平均 w
+        买入 = min(预算, 可用现金)                # 现金不够就少买，绝不卖出腾挪
+
+    时序（严格按真实先后）：① 开盘买入（**只用昨收现金**）→ ② 收盘卖出
+    （当日卖出所得**次日**才可用）→ ③ 现金计息 → ④ 收盘盯市。
+    因此「当日到期的持仓」在当日开盘仍占槽位，腾出的槽位次日才可用。
+
+    成本：按开仓名义额计 C.ROUND_TRIP_COST（佣金万二 + 滑点万五，双边），
+    在卖出时从所得扣除，使单笔实现收益 = 毛收益 − 成本，与 settle_trade 同口径。
+    """
+    dates = book.dates
+    s_i = 0
+    if start_date:
+        s_i = book.idx.get(start_date)
+        if s_i is None:
+            # 非交易日（周末/节假日）顺延到下一个交易日；否则会静默退回全历史
+            nxt = [i for i, d0 in enumerate(dates) if d0 >= start_date]
+            s_i = nxt[0] if nxt else 0
+    start_k = max(s_i, 1)
+    # 只用前 N 个交易日时（滚动一年分布）可提前收尾：账户路径与"跑到今天"完全一致，
+    # 因为任何一天的建仓/盯市都只用 ≤ 当日的行情（无前视）。
+    k_end = len(dates)
+    if end_date:
+        e_i = book.idx.get(end_date)
+        if e_i is None:
+            nxt = [i for i, x in enumerate(dates) if x >= end_date]
+            e_i = nxt[0] if nxt else len(dates) - 1
+        k_end = min(len(dates), e_i + 1)
+    K = int(target_positions or max_holdings or 1)
+    COST = C.ROUND_TRIP_COST
+    rf = cash_yield / 252.0
+
+    gate = bench_ma_gate(book, gate_window) if market_gate else None
+    blocked_by_gate = 0
+
+    # ---------------- 建仓候选（信号日 T 的结论 → 买入日 T+1） ----------------
+    plan: Dict[int, List[dict]] = defaultdict(list)
+    skipped_untradable = 0
+    for t in trades:
+        i0 = book.idx.get(t["date"])
+        if i0 is None or i0 < s_i:
+            continue
+        H = int(t["horizon"])
+        b_i = i0 + 1
+        if t.get("sell_date"):
+            e_i = book.idx.get(t["sell_date"], i0 + 1 + H)
+        else:
+            e_i = i0 + 1 + H
+        if b_i >= len(dates) or e_i <= b_i:
+            continue
+        sid0 = t.get("etf_sid") or book.etf_of(t["sw_name"], dates[b_i])
+        if sid0 is None:
+            skipped_untradable += 1
+            continue
+        if gate is not None and not gate[b_i]:
+            blocked_by_gate += 1
+            continue
+        if entry_gate is not None and not entry_gate(sid0, b_i):
+            blocked_by_gate += 1
+            continue
+        plan[b_i].append({"sw": t["sw_name"], "sid": sid0, "end": e_i,
+                          "horizon": H, "action": t.get("action"),
+                          "reason": t.get("reason"),
+                          "score": float(t.get("composite") or 0)})
+
+    # ---------------- 账户状态 ----------------
+    cash = float(initial_capital)
+    holdings: List[dict] = []
+    nav: List[float] = [float(initial_capital)]
+    nav_dates: List[str] = [dates[max(start_k, 1) - 1] if start_k > 0 else dates[0]]
+    bench_nav: List[float] = [1.0]
+    cur, bcur = float(initial_capital), 1.0
+    events: List[dict] = []
+    plans: Dict[str, dict] = {}
+    hold_count: List[int] = []
+    gate_log: List[float] = []          # 每日实际使用的建仓预算闸门（暴露系数）
+    deployed_log: List[float] = []
+    cash_ratio_log: List[float] = []
+    ret_hist: List[float] = []
+    n_buys = n_sells = 0
+    blocked_by_capacity = blocked_by_cash = blocked_by_sid_cap = blocked_by_cooldown = 0
+    tickets: List[float] = []
+    sid_block_until: Dict[str, int] = {}
+    bench_sid = book.bench_etf
+    prev_close_cache: Dict[str, float] = {}
+
+    def _bench_ret(from_i: int, to_i: int) -> Optional[float]:
+        if not bench_sid:
+            return None
+        bb, bs = book.open_(bench_sid, from_i), book.close(bench_sid, to_i)
+        if not bb or not bs or bb <= 0:
+            return None
+        return bs / bb - 1.0 - COST
+
+    for k in range(start_k, k_end):
+        d = dates[k]
+        day_events: List[dict] = []
+        prev_holdings = list(holdings)          # T 收盘账本（当日买入前）
+        V_prev = nav[-1]                        # 昨收账户总值（无前视）
+
+        # ---- 当日建仓预算闸门：波动目标 × 暴露上限（只用 ≤k-1 的数据）----
+        expo = 1.0
+        floor_k = float(floor_series[k]) if floor_series is not None else vol_floor
+        if vol_target is not None and len(ret_hist) >= 20:
+            sig = float(np.std(ret_hist[-vol_window:]) * np.sqrt(252)) if ret_hist else 0.0
+            if sig > 1e-6:
+                expo = float(np.clip(vol_target / sig, floor_k, 1.0))
+        if cap_series is not None:
+            expo = float(np.clip(min(expo, float(cap_series[k])), 0.0, 1.0))
+
+        # ---- ① 开盘买入（只用昨收现金；当日到期仍占槽位）----
+        adds_all = sorted(plan.get(k, []), key=lambda x: -x["score"])
+        if max_new_per_day is not None:
+            adds_all = adds_all[:max_new_per_day]
+        slots_free = max(0, max_holdings - len(holdings))
+        blocked_by_capacity += max(0, len(adds_all) - slots_free)
+        adds = adds_all[:slots_free]
+        if adds:
+            # w̄：在场持仓（建仓时权重）× 今日候选（当日权重），用于预算倾斜归一
+            ws = [h["w"] for h in holdings]
+            cand_w = []
+            for it in adds:
+                w0 = plan_w(book, it["sid"], k, it["score"], risk_parity, rp_window, score_tilt)
+                it["w"] = w0
+                cand_w.append(w0)
+            allw = ws + cand_w
+            w_bar = float(np.mean(allw)) if allw else 1.0
+            for it in adds:
+                sid0 = it["sid"]
+                if max_per_sid is not None and sum(1 for x in holdings if x["sid"] == sid0) >= max_per_sid:
+                    blocked_by_sid_cap += 1
+                    continue
+                if sid_cooldown is not None and sid_block_until.get(sid0, -1) >= k:
+                    blocked_by_cooldown += 1
+                    continue
+                px = book.open_(sid0, k)
+                if not px or px <= 0:
+                    continue
+                budget = V_prev * expo * (it["w"] / w_bar) / K if K > 0 else 0.0
+                amt = min(budget, cash)
+                if amt <= 1e-9 or amt < budget * 0.05:
+                    blocked_by_cash += 1
+                    continue
+                shares = amt / px
+                cash -= amt
+                holdings.append({"sw": it["sw"], "sid": sid0, "secid": sid0,
+                                 "buy_i": k, "buy_px": px, "shares": shares, "amt": amt,
+                                 "end": it["end"], "horizon": it["horizon"],
+                                 "action": it["action"], "reason": it["reason"],
+                                 "score": it["score"], "w": it["w"]})
+                n_buys += 1
+                tickets.append(amt)
+                mv_i = shares * (book.close(sid0, k) or px)
+                day_events.append({
+                    "k": "B", "sw": it["sw"], "sid": sid0, "price": round(px, 4),
+                    "h": it["horizon"], "a": it["action"], "sc": round(it["score"], 1),
+                    "w": round(it["w"], 4), "amt": round(amt, 6), "sh": round(shares, 6),
+                    "w_share": round(mv_i / (cash + sum(
+                        x["shares"] * (book.close(x["sid"], k) or x["buy_px"]) for x in holdings)), 5)
+                    if (cash + sum(x["shares"] * (book.close(x["sid"], k) or x["buy_px"])
+                                   for x in holdings)) > 0 else None,
+                })
+
+        # ---- ② 收盘卖出（到期；当日所得次日才可用）----
+        kept: List[dict] = []
+        for h in holdings:
+            c = book.close(h["secid"], k)
+            if h["end"] <= k:
+                px = c or prev_close_cache.get(h["sid"])
+                if px:
+                    proceeds = h["shares"] * px - h["amt"] * COST
+                    cash += proceeds
+                    gross = px / h["buy_px"] - 1.0 if h["buy_px"] else None
+                    net = (gross - COST) if gross is not None else None
+                    bre = _bench_ret(h["buy_i"], k)
+                    n_sells += 1
+                    if sid_cooldown is not None and net is not None and net < sid_cooldown_loss_below:
+                        sid_block_until[h["sid"]] = k + sid_cooldown
+                    day_events.append({
+                        "k": "S", "sw": h["sw"], "sid": h["secid"],
+                        "price": round(px, 4), "bd": dates[h["buy_i"]],
+                        "bpx": round(h["buy_px"], 4), "h": h["horizon"], "a": h["action"],
+                        "why": h["reason"], "gross": round(gross, 5) if gross is not None else None,
+                        "ret": round(net, 5) if net is not None else None,
+                        "ex": round(net - bre, 5) if (net is not None and bre is not None) else None,
+                        "w": round(h["w"], 4), "amt": round(proceeds, 6),
+                        "sh": round(h["shares"], 6),
+                        "w_share": round(h["shares"] * px / (cash - proceeds + h["shares"] * px), 5)
+                        if (cash - proceeds + h["shares"] * px) > 0 else None,
+                    })
+                continue
+            kept.append(h)
+        holdings = kept
+
+        # ---- ③ 现金计息 ----④ 盯市 ----
+        cash *= (1.0 + rf)
+        mv = 0.0
+        for h in holdings:
+            c = book.close(h["secid"], k) or prev_close_cache.get(h["sid"]) or h["buy_px"]
+            mv += h["shares"] * c
+        cur = cash + mv
+        nav.append(cur)
+        nav_dates.append(d)
+        hold_count.append(len(holdings))
+        gate_log.append(expo)
+        deployed_log.append(mv / cur if cur > 0 else 0.0)
+        cash_ratio_log.append(cash / cur if cur > 0 else 1.0)
+        ret_hist.append(cur / V_prev - 1.0 if V_prev > 0 else 0.0)
+
+        if day_events:
+            idx = len(nav) - 1
+            for ev in day_events:
+                ev["i"] = idx
+            events.extend(day_events)
+
+        # ---- 逐日「建仓计划块」（「我的持仓」页用；只含 ≤T 数据）----
+        if k - 1 >= start_k:
+            sig_date = dates[k - 1]
+            book_rows, ws_now = [], [h["w"] for h in prev_holdings]
+            w_bar_now = float(np.mean(ws_now)) if ws_now else 1.0
+            for h in prev_holdings:
+                book_rows.append([h["secid"], dates[h["buy_i"]], round(h["w"], 4),
+                                  1 if h["end"] <= k else 0])
+            pick_rows = [[it["sw"], it["sid"],
+                          round(plan_w(book, it["sid"], k, it["score"], risk_parity,
+                                       rp_window, score_tilt), 4),
+                          round(it["score"], 2)] for it in plan.get(k, [])]
+            plans[sig_date] = {
+                "date": sig_date, "buy_date": d, "exposure": round(expo, 4),
+                "max_holdings": int(max_holdings), "max_new_per_day": int(max_new_per_day or 0),
+                "target_positions": K,
+                "budget_per_slot": round(V_prev * expo / K, 6) if K else 0.0,
+                "cash_ratio": round(cash_ratio_log[-1], 4),
+                "w_bar": round(w_bar_now, 4),
+                "room": int(max(0, max_holdings - len(prev_holdings))),
+                "book": book_rows, "picks": pick_rows,
+            }
+
+        # ---- 基准 ----
+        if bench_sid:
+            bprev, bnow = book.close(bench_sid, k - 1), book.close(bench_sid, k)
+            if bprev and bnow:
+                bcur *= (bnow / bprev)
+        bench_nav.append(bcur)
+        prev_close_cache = {h["sid"]: book.close(h["secid"], k) for h in holdings
+                            if book.close(h["secid"], k)}
+
+    # ---------------- 统计 ----------------
+    nav_arr = np.array(nav)
+    bench_arr = np.array(bench_nav)
+    stats = perf_stats(nav_arr, nav_dates, bench_arr if bench_sid else None)
+    first_i = next((i for i, x in enumerate(hold_count) if x > 0), 0) + 1
+    if 0 < first_i < len(nav) - 100:
+        eff = perf_stats(nav_arr[first_i:], nav_dates[first_i:],
+                         bench_arr[first_i:] if bench_sid else None)
+        eff["start"] = nav_dates[first_i]
+        stats["effective"] = eff
+    stats.update({
+        "basis": "executable_cash_account",
+        "skipped_untradable": skipped_untradable,
+        "executed_trades": n_buys,
+        "planned_trades": sum(len(v) for v in plan.values()),
+        "blocked_by_capacity": blocked_by_capacity,
+        "blocked_by_cash": blocked_by_cash,
+        "blocked_by_sid_cap": blocked_by_sid_cap,
+        "blocked_by_cooldown": blocked_by_cooldown,
+        "blocked_by_gate": blocked_by_gate,
+        "sid_cooldown": sid_cooldown,
+        "market_gate": bool(market_gate),
+        "max_holdings": max_holdings,
+        "target_positions": K,
+        "initial_capital": float(initial_capital),
+        "risk_parity": bool(risk_parity),
+        "vol_target": vol_target,
+        "vol_floor": vol_floor if vol_target is not None else None,
+        "floor_series": floor_series is not None,
+        "cap_series": cap_series is not None,
+        "avg_deployed": round(float(np.mean(deployed_log)), 3) if deployed_log else None,
+        "avg_cash_ratio": round(float(np.mean(cash_ratio_log)), 3) if cash_ratio_log else None,
+        "min_cash_ratio": round(float(np.min(cash_ratio_log)), 4) if cash_ratio_log else None,
+        "final_cash_ratio": round(cash_ratio_log[-1], 4) if cash_ratio_log else None,
+        "avg_holdings": round(float(np.mean(hold_count)), 2) if hold_count else None,
+        "max_holdings_used": int(max(hold_count)) if hold_count else 0,
+        "avg_ticket": round(float(np.mean(tickets)), 5) if tickets else None,
+        "n_sells": n_sells,
+        "open_at_end": len(holdings),
+    })
+    stats["avg_exposure"] = stats["avg_deployed"]
+    stats["avg_invested"] = stats["avg_deployed"]
+    used = {ev["sid"] for ev in events}
+    etf_names = {sid: book.listing.get(sid, {}).get("name", sid) for sid in used}
+    return {
+        "dates": nav_dates,
+        "nav": [round(x, 5) for x in nav],
+        "bench": [round(x, 5) for x in bench_nav],
+        "stats": stats,
+        "events": events,
+        "etf_names": etf_names,
+        "plans": plans,
+        "end_book": [[h["secid"], dates[h["buy_i"]], round(h["w"], 4)] for h in holdings],
+        "holdings": [0] + hold_count,
+        # gate = 建仓预算闸门（vol_target × 暴露上限），与 nav 等长；起始日为 1.0
+        "gate": [1.0] + [round(x, 4) for x in gate_log],
+        "exposure": [0.0] + [round(x, 4) for x in deployed_log],
+        "invested": [0.0] + [round(x, 4) for x in deployed_log],
+    }
+
+
+def rolling_fresh_entry(book: EtfBook, trades: List[dict],
+                        horizon: int = 252, **kw) -> Optional[dict]:
+    """**独立起账**的一年分布：把每个交易日都当作入市日，各起一本新账（初始全现金）。
+
+    与 `perf_stats` 里的 rolling_1y 不是同一个问题：
+      · perf_stats.rolling_1y = 同一条净值曲线自身的 252 日滚动窗口（假设从数据起点
+        就一直在场，窗口之间有重叠与路径依赖）；
+      · 本函数 = 「我某天入场、只持有一年」的真实体验——每个入市日的一切都从现金重来，
+        账户状态（现金/槽位/在手笔数）也重来，这才是预期管理该看的分布。
+    同时给出**同一窗口**的基准 ETF 收益，用来回答「随机入场持有一年，能不能跑赢躺着不动」。
+
+    无前视：每个起点只用该起点之后的行情，且跑满 horizon 个交易日即收尾（路径与跑到今天一致）。
+    """
+    dates = book.dates
+    rets: List[float] = []
+    brets: List[float] = []
+    bsid = book.bench_etf
+    # 起点：全部交易日，但留出 horizon 个交易日；不早于第一笔候选结论。
+    first = min((book.idx[t["date"]] for t in trades if t.get("date") in book.idx),
+                default=0)
+    for i in range(first, max(first, len(dates) - horizon - 1)):
+        r = simulate_cash_account(book, trades, start_date=dates[i], end_date=dates[i + horizon], **kw)
+        nav = r["nav"]
+        if len(nav) <= horizon:
+            continue
+        rets.append(nav[horizon] / nav[0] - 1.0)
+        if bsid:
+            b0 = book.close(bsid, book.idx[r["dates"][0]])
+            b1 = book.close(bsid, book.idx[r["dates"][horizon]])
+            if b0 and b1:
+                brets.append(b1 / b0 - 1.0)
+    if len(rets) < 50:
+        return None
+    a = np.array(rets)
+    b = np.array(brets) if len(brets) == len(rets) else None
+    out = {
+        "n": int(a.size),
+        "mean": round(float(a.mean()), 4),
+        "median": round(float(np.median(a)), 4),
+        "win_rate": round(float((a > 0).mean()), 3),
+        "p5": round(float(np.percentile(a, 5)), 4),
+        "p95": round(float(np.percentile(a, 95)), 4),
+        "worst": round(float(a.min()), 4),
+        "best": round(float(a.max()), 4),
+        "horizon": int(horizon),
+    }
+    if b is not None:
+        out.update({
+            "bench_mean": round(float(b.mean()), 4),
+            "bench_median": round(float(np.median(b)), 4),
+            "beat_rate": round(float((a > b).mean()), 3),
+        })
+    return out
+
+
 def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                            start_date: Optional[str] = None,
                            max_holdings: int = 999,
+                           target_positions: Optional[int] = None,
+                           initial_capital: float = 1.0,
                            market_gate: bool = False,
                            gate_window: int = 200,
                            risk_parity: bool = False,
@@ -449,360 +865,39 @@ def simulate_etf_portfolio(book: EtfBook, trades: List[dict],
                            entry_gate: Optional[callable] = None,
                            sid_cooldown: Optional[int] = None,
                            sid_cooldown_loss_below: float = 0.0,
-                           cash_yield: float = 0.015,
+                           cash_yield: float = 0.010,
                            score_tilt: float = 0.0,
                            max_new_per_day: Optional[int] = None,
                            max_per_sid: Optional[int] = None) -> dict:
-    """把全部可交易结论按「等权 + 各自持有期」滚成资金曲线。
+    """把全部可交易结论滚成**有限资金池的可执行资金曲线**（主口径）。
 
-    trades: [{date, sw_name, horizon, ...}]
-    规则：
-      - 每个交易日，当日新开仓的结论与已有持仓**等权**配置（满仓、无择时加减仓）
-      - 持仓数量上限 max_holdings（超出时按综合分取前 N，模拟真实资金约束）
-      - 只在可交易行业上建仓；不可交易的结论直接跳过（不进入曲线）
-      - market_gate=True 时，只在基准 ETF 位于其 MA200 上方时才新建仓
+    自 ark-1.8.0 起，本函数不再自己算净值，而是委托 simulate_cash_account()：
+    现金账户逐日记账、只买不卖（除到期）、无每日再平衡。保留本入口只是为了
+    不打断 review / lab / verify 的调用点；参数语义见 simulate_cash_account。
 
-    风控增强（默认关闭，关闭时与历史口径完全一致）：
-      - risk_parity=True：持仓间按 1/σ 分配权重（风险预算等价），而非等权。
-        高波动行业不再和低波动行业占同样的资金，组合特质波动下降。
-      - vol_target=X：组合已实现波动（过去 vol_window 日）高于 X 时按比例降仓，
-        最低不低于 vol_floor；未投入部分按 cash_yield 计现金收益。
-        依据是波动聚集性——高波动期往往也是回撤累积期。
-      这两条只改变**权重与总暴露**，不改变任何一笔买卖的时点与标的，
-      因此方向判断胜率、成交笔数等结论层指标不受影响。
-
-    配置增强（默认关闭）：
-      - score_tilt>0：持仓权重再乘 (综合分/50)^score_tilt，让高分结论占更大权重，
-        替代「所有结论一视同仁」的等权。不改变成交集合与时点。
-      - max_new_per_day=N：每日最多新建 N 个仓位（容量上限 max_holdings 不变），
-        避免在信号密集日把资金均摊到低分结论上。
-      - max_per_sid=N：同一只 ETF 同时最多占 N 个槽位。两层架构下多条细分赛道结论
-        会共用同一只一级行业 ETF 作代理，若不限制，就等于在这只 ETF 上反复加码。
-        实验台（lab_opt6）结论：这条**不是** Pareto 改进——它确实能压回撤
-        （同 ETF≤2 时 -29.91% → -26.46%），但年化要付 2.6pp 的代价（12.57% → 9.97%）。
-        因此不进生产配置，只在复盘页作为「再降回撤的价码」显式列出，让取舍可见。
+    参数（沿用旧名，语义已改为**入场侧**）：
+      · risk_parity / rp_window：建仓预算按 1/σ 倾斜（不再是每日重算权重）
+      · score_tilt：建仓预算再乘 (综合分/50)^tilt
+      · vol_target / vol_floor / floor_series / cap_series：只作为**建仓预算闸门**，
+        不能降低存量暴露（存量只能靠到期自然退出）
+      · max_holdings / max_new_per_day / max_per_sid / sid_cooldown / entry_gate /
+        market_gate：入场约束，语义不变
     """
-    dates = book.dates
-    if start_date:
-        s_i = book.idx.get(start_date)
-        if s_i is None:
-            s_i = 0
-    else:
-        s_i = 0
-
-    gate = bench_ma_gate(book, gate_window) if market_gate else None
-    blocked_by_gate = 0
-
-    # 建仓计划：按日期归集
-    plan = defaultdict(list)
-    skipped_untradable = 0
-    for t in trades:
-        d = t["date"]
-        i0 = book.idx.get(d)
-        if i0 is None or i0 < s_i:
-            continue
-        H = int(t["horizon"])
-        b_i = i0 + 1
-        # 若单笔结算给出了实际卖出日（如触发失效条件提前退出），以它为准，
-        # 否则按建议周期到期卖出。组合曲线必须复用单笔的真实持有区间。
-        if t.get("sell_date"):
-            s_i_ = book.idx.get(t["sell_date"], i0 + 1 + H)
-        else:
-            s_i_ = i0 + 1 + H
-        if b_i >= len(dates) or s_i_ <= b_i:
-            continue
-        # 卖出日超出数据末端的结论不再整笔丢弃：T+1 的买入在现实中已经发生，
-        # 只是建议周期尚未走完。丢弃会让曲线右端「只有 S 没有 B」、持仓被
-        # 人为清零。这里照常入账：B 事件照发，持仓保持在场、逐日按收盘价
-        # 计值（下方主循环对 h["end"] > k 的持仓本就只计值不强平），
-        # 卖出事件等数据真正走到到期日才产生。
-        sid0 = t.get("etf_sid") or book.etf_of(t["sw_name"], dates[b_i])
-        if sid0 is None:
-            skipped_untradable += 1
-            continue
-        if gate is not None and not gate[b_i]:
-            blocked_by_gate += 1
-            continue
-        # 行业级入场闸：entry_gate(sid, b_i) 为 False 时不给该行业开新仓。
-        # 只挡新开仓，不触碰任何已有持仓的持有期与卖出时点。
-        if entry_gate is not None and not entry_gate(sid0, b_i):
-            blocked_by_gate += 1
-            continue
-        plan[b_i].append({"sw": t["sw_name"], "end": s_i_, "secid": sid0,
-                          "score": t.get("composite", 0),
-                          "horizon": H, "action": t.get("action"),
-                          "reason": t.get("reason")})
-
-    holdings: List[dict] = []      # 活跃持仓 [{sw, end, secid, last_close}]
-    nav, nav_dates = [1.0], [dates[max(s_i, 1) - 1] if s_i > 0 else dates[0]]
-    bench_nav = [1.0]
-    cur = 1.0
-    bcur = 1.0
-    bench_sid = book.bench_etf
-    prev_close_cache: Dict[str, float] = {}
-    # 成交事件：曲线上的 B/S 点，逐笔可追溯（前端悬浮展示）
-    events: List[dict] = []
-    n_executed = 0
-    blocked_by_capacity = 0
-    blocked_by_sid_cap = 0
-    rf = cash_yield / 252.0
-    ret_hist: List[float] = []
-    exposure_log: List[float] = []
-    hold_count: List[int] = []
-    # 亏损冷却：sid 在亏损卖出后被禁入 N 个交易日（针对「反复给同一只
-    # 跌透的主线接飞刀」——2023 传媒 24 连亏、2026 有色 13 连买的复盘结论）。
-    sid_block_until: Dict[str, int] = {}
-    blocked_by_cooldown = 0
-    ld_turnover = 0.0          # 当日浮亏降权翻转的换手（权重和口径）
-    ld_cost_total = 0.0        # 全期翻转成本（收益率口径累计）
-
-    def _bench_ret(from_i: int, to_i: int) -> Optional[float]:
-        """同期基准 ETF 的净收益（同一成本口径），用于单笔超额。"""
-        if not bench_sid:
-            return None
-        bb = book.open_(bench_sid, from_i)
-        bs = book.close(bench_sid, to_i)
-        if not bb or not bs or bb <= 0:
-            return None
-        return bs / bb - 1.0 - C.ROUND_TRIP_COST
-
-    start_k = max(s_i, 1)
-    for k in range(start_k, len(dates)):
-        d = dates[k]
-        day_events: List[dict] = []
-        # 1) 先把到期持仓按「昨日收盘 -> 今日收盘」的收益计入（今日收盘卖出）
-        day_rets = []          # [(日收益, 权重)]
-        new_holdings = []
-        for h in holdings:
-            c = book.close(h["secid"], k)
-            p = prev_close_cache.get(h["sid"])
-            if risk_parity:
-                h["sigma"] = _sigma(book, h["secid"], k, rp_window)
-                h["w"] = 1.0 / max(h["sigma"], 0.05)
-            else:
-                h["w"] = 1.0
-            # 分数加权：高分结论占更大权重（tilt=0 时与等权完全一致）
-            if score_tilt:
-                h["w"] *= max(float(h.get("score") or 50.0), 1.0) ** score_tilt / (50.0 ** score_tilt)
-            if c and p:
-                # 浮亏降权（实验杠杆，默认关闭）：未平仓且浮亏的持仓按因子降权，
-                # 降出的权重按现金收益计。不卖出、不改变持有期与卖出时点，
-                # 只是「浮亏仓位自动减半仓」的连续化——攻击「下跌中死扛到期」。
-                # 无前视：用昨日收盘判定浮亏（今日开盘时已知），当日权重当日生效；
-                # 浮亏收复即自动恢复权重。每次因子翻转按真实单边成本计费。
-                factor = 1.0
-                if (loser_deweight is not None and h.get("buy_price")
-                        and h["buy_i"] < k and h["buy_price"] > 0):
-                    ur = p / h["buy_price"] - 1.0
-                    if ur < loser_deweight.get("deep_threshold", -0.10):
-                        factor = float(loser_deweight.get("deep_factor", 0.25))
-                    elif ur < loser_deweight.get("threshold", 0.0):
-                        factor = float(loser_deweight.get("factor", 0.5))
-                if loser_deweight is not None:
-                    pf_prev = h.get("ld_factor", 1.0)
-                    if factor != pf_prev:
-                        ld_turnover += abs(factor - pf_prev) * h["w"]
-                    h["ld_factor"] = factor
-                if factor < 1.0:
-                    day_rets.append((c / p - 1.0, h["w"] * factor))
-                    day_rets.append((rf, h["w"] * (1.0 - factor)))
-                else:
-                    day_rets.append((c / p - 1.0, h["w"]))
-            if h["end"] > k:          # 未到期，继续持有
-                h2 = dict(h)
-                new_holdings.append(h2)
-            else:
-                # 到期：在今日收盘卖出。单笔盈亏以组合实际成交价重算，
-                # 保证悬浮里看到的收益与曲线用的是同一笔钱。
-                bpx = h.get("buy_price")
-                gross = (c / bpx - 1.0) if (c and bpx) else None
-                net = (gross - C.ROUND_TRIP_COST) if gross is not None else None
-                bre = _bench_ret(h.get("buy_i", k), k)
-                day_events.append({
-                    "k": "S", "sw": h["sw"], "sid": h["secid"],
-                    "price": round(c, 4) if c else None,
-                    "bd": dates[h["buy_i"]] if h.get("buy_i") is not None else None,
-                    "bpx": round(bpx, 4) if bpx else None,
-                    "h": h.get("horizon"), "a": h.get("action"),
-                    "why": h.get("reason"),
-                    "gross": round(gross, 5) if gross is not None else None,
-                    "ret": round(net, 5) if net is not None else None,
-                    "ex": round(net - bre, 5) if (net is not None and bre is not None) else None,
-                    # 卖出日的组合权重（风险平价 × 分数加权，日度重算口径）。
-                    # 前端核验用：与建仓 w 对比可看出权重随 σ 漂移。
-                    "w": round(float(h.get("w") or 0), 4),
-                })
-                # 亏损冷却触发：该 sid 禁入至 k + cooldown
-                if (sid_cooldown is not None and net is not None
-                        and net < sid_cooldown_loss_below):
-                    sid_block_until[h["sid"]] = k + sid_cooldown
-        holdings = new_holdings
-
-        # 2) 新开仓：今日开盘买入，当日收益 = 收盘/开盘
-        if k in plan:
-            adds = sorted(plan[k], key=lambda x: -x.get("score", 0))
-            if max_new_per_day is not None:
-                adds = adds[:max_new_per_day]
-            room = max(0, max_holdings - len(holdings))
-            blocked_by_capacity += max(0, len(adds) - room)
-            for item in adds[:room]:
-                sid = item.get("secid") or book.etf_of(item["sw"], dates[k])
-                if not sid:
-                    continue
-                # 同一只 ETF 的槽位上限（None = 不限）。只挡「再买同一只」，
-                # 不改动任何已有持仓的到期日与卖出价。
-                if max_per_sid is not None:
-                    if sum(1 for x in holdings if x["sid"] == sid) >= max_per_sid:
-                        blocked_by_sid_cap += 1
-                        continue
-                # 亏损冷却：该 sid 刚亏损卖出，仍在禁入期内
-                if sid_cooldown is not None and sid_block_until.get(sid, -1) >= k:
-                    blocked_by_cooldown += 1
-                    continue
-                o = book.open_(sid, k)
-                if not o:
-                    continue
-                sig = _sigma(book, sid, k, rp_window) if risk_parity else 0.25
-                w = (1.0 / max(sig, 0.05)) if risk_parity else 1.0
-                if score_tilt:
-                    w *= max(float(item.get("score") or 50.0), 1.0) ** score_tilt / (50.0 ** score_tilt)
-                holdings.append({"sw": item["sw"], "sid": sid, "secid": sid,
-                                 "end": item["end"], "buy_i": k, "buy_price": o,
-                                 "horizon": item.get("horizon"),
-                                 "action": item.get("action"),
-                                 "reason": item.get("reason"),
-                                 "score": item.get("score"),
-                                 "sigma": sig, "w": w})
-                n_executed += 1
-                day_events.append({
-                    "k": "B", "sw": item["sw"], "sid": sid,
-                    "price": round(o, 4), "h": item.get("horizon"),
-                    "a": item.get("action"),
-                    "sc": round(float(item.get("score") or 0), 1),
-                    # 建仓权重（1/σ × 分数加权）：前端展示「这笔钱占组合多少」
-                    "w": round(float(holdings[-1]["w"]), 4),
-                })
-                c = book.close(sid, k)
-                if c:
-                    day_rets.append((c / o - 1.0, holdings[-1]["w"]))
-
-        # 3) 更新 prev_close
-        prev_close_cache = {}
-        for h in holdings:
-            c = book.close(h["secid"], k)
-            if c:
-                prev_close_cache[h["sid"]] = c
-
-        if day_rets:
-            w_sum = sum(w for _, w in day_rets)
-            r_raw = float(sum(x * w for x, w in day_rets) / w_sum) if w_sum > 0 else 0.0
-        else:
-            r_raw = 0.0
-
-        # 浮亏降权的翻转成本：每次因子变动 = |Δfactor| 比例的真实调仓，
-        # 按单边成本（佣金+滑点）计费，从当日组合收益中扣除
-        if loser_deweight is not None and ld_turnover > 0:
-            raw_w = sum(h["w"] for h in holdings) or 1.0
-            r_raw -= ld_turnover / raw_w * (
-                C.TRADING_COST["commission"] + C.TRADING_COST["slippage"])
-            ld_cost_total += ld_turnover / raw_w * (
-                C.TRADING_COST["commission"] + C.TRADING_COST["slippage"])
-            ld_turnover = 0.0
-
-        # 4) 波动目标：高波动期按比例降仓，剩余部分计现金收益（无前视）
-        #    floor_series：逐日暴露下限（长度=len(dates)，可来自趋势/回撤等状态变量）。
-        #    传入时覆盖固定 vol_floor——这是「连续降暴露」类风控的统一入口，
-        #    只改变暴露水平，不改变任何买卖时点与标的。floor_series[k] 必须只依赖
-        #    第 k 日之前（≤k-1）可得的信息，由调用方保证。
-        #    cap_series：逐日暴露上限（与 floor 同长度同无前视约束）。floor 只能
-        #    「允许」波动目标降得更低，在阴跌年份（波动不高、vol_target 不触发）
-        #    完全不起作用；cap 反向强制总暴露不超过上限，是「下跌年份压暴露」
-        #    的有效杠杆。cap 可低于 floor：cap 语义是硬上限，优先生效。
-        expo = 1.0
-        floor_k = float(floor_series[k]) if floor_series is not None else vol_floor
-        if vol_target is not None and len(ret_hist) >= 20:
-            sig = float(np.std(ret_hist[-vol_window:]) * np.sqrt(252))
-            if sig > 1e-6:
-                expo = float(np.clip(vol_target / sig, floor_k, 1.0))
-        if cap_series is not None:
-            expo = float(np.clip(min(expo, float(cap_series[k])), 0.0, 1.0))
-        r = expo * r_raw + (1.0 - expo) * rf
-        cur *= (1.0 + r)
-        ret_hist.append(r)
-        nav.append(cur)
-        nav_dates.append(d)
-        hold_count.append(len(holdings))
-        exposure_log.append(expo)
-
-        # 事件锚定到当日净值点（前端按此索引在曲线上定位）
-        if day_events:
-            idx = len(nav) - 1
-            for ev in day_events:
-                ev["i"] = idx
-            events.extend(day_events)
-
-        # 基准
-        if bench_sid:
-            bprev = book.close(bench_sid, k - 1)
-            bnow = book.close(bench_sid, k)
-            if bprev and bnow:
-                bcur *= (bnow / bprev)
-        bench_nav.append(bcur)
-
-    nav_arr = np.array(nav)
-    bench_arr = np.array(bench_nav)
-    stats = perf_stats(nav_arr, nav_dates, bench_arr if bench_sid else None)
-    # 运行期口径：ETF 覆盖不足的年份组合空仓，会稀释年化，单列一条如实展示
-    first_i = next((i for i, x in enumerate(hold_count) if x > 0), 0) + 1
-    if 0 < first_i < len(nav) - 100:
-        eff = perf_stats(nav_arr[first_i:], nav_dates[first_i:],
-                         bench_arr[first_i:] if bench_sid else None)
-        eff["start"] = nav_dates[first_i]
-        stats["effective"] = eff
-    stats["skipped_untradable"] = skipped_untradable
-    stats["executed_trades"] = n_executed
-    stats["planned_trades"] = sum(len(v) for v in plan.values())
-    stats["blocked_by_capacity"] = blocked_by_capacity
-    stats["blocked_by_sid_cap"] = blocked_by_sid_cap
-    stats["max_per_sid"] = max_per_sid
-    stats["blocked_by_gate"] = blocked_by_gate
-    stats["blocked_by_cooldown"] = blocked_by_cooldown
-    stats["sid_cooldown"] = sid_cooldown
-    stats["market_gate"] = bool(market_gate)
-    stats["max_holdings"] = max_holdings
-    stats["risk_parity"] = bool(risk_parity)
-    stats["vol_target"] = vol_target
-    stats["vol_floor"] = vol_floor if vol_target is not None else None
-    stats["floor_series"] = floor_series is not None
-    stats["cap_series"] = cap_series is not None
-    stats["loser_deweight"] = bool(loser_deweight)
-    stats["ld_cost_drag"] = round(ld_cost_total, 5)
-    stats["avg_exposure"] = round(float(np.mean(exposure_log)), 3) if exposure_log else None
-    stats["avg_holdings"] = round(float(np.mean(hold_count)), 2) if hold_count else None
-    # 实际投入比例 = 持仓数/容量 × 波动目标暴露系数（前端辅助轴直接用这一列）
-    inv = [min(1.0, h / max_holdings) * e for h, e in zip(hold_count, exposure_log)]
-    stats["avg_invested"] = round(float(np.mean(inv)), 3) if inv else None
-    stats["max_holdings_used"] = int(max(hold_count)) if hold_count else 0
-    # 数据末端仍在场的持仓数：已买入、卖出日未到（超出数据末端），
-    # 曲线上只有 B 没有 S 属正常在途，不是数据缺失
-    stats["open_at_end"] = len(holdings)
-    # 成交事件里出现的 ETF 名称表（事件只存 secid，前端查名）
-    used = {ev["sid"] for ev in events}
-    etf_names = {sid: book.listing.get(sid, {}).get("name", sid) for sid in used}
-    return {
-        "dates": nav_dates,
-        "nav": [round(x, 5) for x in nav],
-        "bench": [round(x, 5) for x in bench_nav],
-        "stats": stats,
-        "events": events,
-        "etf_names": etf_names,
-        # 逐日仓位序列，与 dates/nav 严格等长（首点是起始基准日，尚无持仓，前置补 0）
-        #   holdings = 当日实际持仓只数；exposure = 波动目标的暴露系数；
-        #   invested = 实际投入比例。三者都来自真实模拟，不是事后估算。
-        "holdings": [0] + hold_count,
-        "exposure": [1.0] + [round(x, 4) for x in exposure_log],
-        "invested": [0.0] + [round(x, 4) for x in inv],
-    }
+    # 旧口径（每日再平衡、公式给净值）已废弃：统一委托给「有限资金池可执行账户」。
+    # 保留本函数名与参数是为了不打断 review / lab / verify 的调用点。
+    return simulate_cash_account(
+        book, trades, start_date=start_date, max_holdings=max_holdings,
+        initial_capital=initial_capital,
+        max_new_per_day=max_new_per_day,
+        target_positions=(target_positions if target_positions is not None
+                          else getattr(C, "PORTFOLIO", {}).get("target_positions")),
+        risk_parity=risk_parity, rp_window=rp_window, score_tilt=score_tilt,
+        vol_target=vol_target, vol_window=vol_window, vol_floor=vol_floor,
+        floor_series=floor_series, cap_series=cap_series, entry_gate=entry_gate,
+        sid_cooldown=sid_cooldown, sid_cooldown_loss_below=sid_cooldown_loss_below,
+        market_gate=market_gate, gate_window=gate_window,
+        max_per_sid=max_per_sid, cash_yield=cash_yield,
+    )
 
 
 # -------------------------------------------------------------- 当前持仓与「今日出手」

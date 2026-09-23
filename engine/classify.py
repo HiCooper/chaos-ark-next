@@ -287,7 +287,8 @@ def classify_day(fs: FeatureStore, dims: Dict[str, np.ndarray], comp: np.ndarray
     #   · rs120 < 0：结论自带的失效条件里写着「120日相对行业等权超额转负 -> 结论作废」，
     #     事前给出建仓结论等于自相矛盾（实测这类结论胜率仅 4.8%、平均超额 -7.91%）。
     #   · pos60 > 0.95：买在近 60 日区间顶部 5%，属追高（实测年化 +2.9pp、回撤 -3.2pp）。
-    # 实证见 engine/lab_opt*.py：实验台先精确复现线上基线后才做反事实。
+    # 实证见 docs/口径变更-2026-09-23-可执行账户.md（实验台先精确复现线上基线后才做反事实，
+    # 脚本已在 2026-09-23 清理，只保留结论）。
     FLT = getattr(C, "CONCLUSION_FILTER", {})
     demoted: List[dict] = []
     kept: List[dict] = []

@@ -8,11 +8,13 @@
 交易日的收益分布——这是对「年化是否可靠」最严格的滚动检验，比随机
 抽几个点更严格；另做固定种子随机抽样 500 次复核统计量一致性。
 
-口径（与生产逐位一致）：
-  · trades 从 review.json 的 B/S 事件重建（load_trades_from_events，含
-    sell_date 的真实持有区间）；
-  · 生产风控全开：risk_parity / vol_target / score_tilt / F5 暴露上限
-    （settlement.build_exposure_cap，与 review.py 主口径同源）；
+口径（ark-1.8.0-executable 起，2026-09-23 修订）：
+  · **候选集 = 全部结论**（day 文件里所有「有可交易 ETF 且周期>0」的结论）。
+    旧版从 review.json 的 B/S 事件重建 trades 是错的——那只是旧口径下**实际成交的子集**，
+    喂给可执行账户会让它只能买旧模型买过的东西，等于把旧口径的选择偏差带进来。
+  · 账户模型：settlement.simulate_cash_account（有限资金池、只买不卖、卖出所得次日可用）；
+  · 当前生产配置全开（risk_parity / vol_target / F5 暴露上限 / score_tilt / K）；
+    另跑「无 F5」对照以隔离暴露上限在一年期窗口里的作用；
   · 对照：基准 ETF（bench）同窗口买入持有。
 
 运行：cd engine && ../.venv/bin/python lab_entry_dates.py
@@ -27,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 import qfq  # noqa: E402
 import settlement as ST  # noqa: E402
-from lab_downside import load_trades_from_events  # noqa: E402
+from lab_exec_risk import load_candidates  # noqa: E402
 
 RC = C.RISK_CONTROL
 PF = C.PORTFOLIO
@@ -71,8 +73,8 @@ def stats_of(xs: np.ndarray) -> dict:
 
 
 def main() -> None:
-    trades, prod_dates = load_trades_from_events()
-    print(f"从 review.json 重建 {len(trades)} 笔交易")
+    trades = load_candidates()
+    print(f"候选结论 {len(trades)} 条（全部结论，非旧口径成交子集）")
 
     ep = json.load(open(f"{C.CACHE_DIR}/etf_panel.json"))
     src, _ = qfq.apply_qfq(ep, None, verbose=False)
@@ -81,6 +83,7 @@ def main() -> None:
     n = len(dates)
 
     kw = dict(max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
+              target_positions=PF.get("target_positions", 16),
               risk_parity=RC["risk_parity"], rp_window=RC["rp_window"],
               vol_target=RC["vol_target"], vol_window=RC["vol_window"],
               vol_floor=RC["vol_floor"], cash_yield=RC["cash_yield"],

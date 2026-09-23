@@ -320,6 +320,14 @@ def cmd_verify() -> int:
         print(f"  ✗ {len(bad)} 个 L0 文件校验失败（禁止手改 L0，请用 ark.py repair）")
         return 1
     print("  ✓ L0 完整")
+
+    print("[verify] 账本可执行性对账（净值必须能由事件日志重放）...")
+    r = subprocess.run([pick_python(need_akshare=False), "-u",
+                        os.path.join(ENGINE, "verify_ledger.py")],
+                       cwd=ENGINE, capture_output=True, text=True)
+    print((r.stdout or "").rstrip() or (r.stderr or "").rstrip()[:500])
+    if r.returncode != 0:
+        return 1
     lv = water_level()
     fp = lv.get("L2_features_fp") or {}
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))

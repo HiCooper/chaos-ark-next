@@ -22,7 +22,7 @@ import config as C  # noqa: E402
 from feature_store import EW_CODE, FeatureStore  # noqa: E402
 from settlement import (  # noqa: E402
     EtfBook, simulate_etf_portfolio, market_phases, stats_by_phase, perf_stats,
-    holding_stats, build_exposure_cap,
+    holding_stats, build_exposure_cap, plan_w, rolling_fresh_entry,
 )
 
 ATTR_LABEL = {
@@ -407,6 +407,103 @@ def build_improvements(evals: List[dict]) -> List[dict]:
     return out
 
 
+def build_sim_export(book: EtfBook, dates: List[str], trades_exec: List[dict],
+                     buy_plans: dict, RC: dict, PF: dict) -> dict:
+    """导出「我的持仓」影子账户的全部输入，供前端逐日重放（无前视）。
+
+    前端只需要本金 C 与入市起始日 S，用同一份候选、同一份开盘/收盘价重放，
+    就能算出**这本账真实的样子**：现金余额、逐笔成本与市值、浮盈、已实现收益。
+    这不是"按目标权重折算金额"的估算——引擎自己就是这么记净值的
+    （engine/settlement.py: simulate_cash_account），前端只是把它重放一遍。
+
+    载荷（单文件 data/sim.json）：
+      dates          账本交易日历（= book.dates，与行情数组一一对齐）
+      days[T]        T=信号日；p=当日结论中可交易且周期>0 的标的（买入日 = T+1）
+                     p 行 = [行业, sid, 建仓权重 w, 综合分, 到期日|None, 周期(交易日), 动作]
+                     e=买入日实际使用的建仓预算闸门（生产配置下恒为 1.0）
+      px.o / px.c    每个用到标的的**前复权**开盘价 / 收盘价（与 book.open_ / close 逐位一致）
+                     o 已内含「缺开盘价退化为收盘价」的规则；缺失日为 null
+      K / max_holdings / max_new_per_day / cost / cash_yield  账户规则常数
+
+    只为「候选标的」导出价格，体积可控；前端不做行情计算——波动率 σ 已经
+    体现在 w 里（引擎的 plan_w 用 ≤T 的数据算好），前端只按引擎的资金规则记账。
+    """
+    # 账本日历（book.dates，1999 起全历史）通常**长于**信号日历（dates，2018 起）：
+    # 价格数组只需覆盖信号日历，用 off 把信号下标换算成账本下标。
+    bk = book.dates
+    if dates and len(dates) <= len(bk) and bk[-len(dates):] == dates:
+        off, cal = len(bk) - len(dates), dates
+    else:                      # 意外不一致时退回账本日历（宁可大一点，不可错位）
+        off, cal = 0, bk
+    n = len(cal)
+    days: Dict[str, dict] = {}
+    sids: set = set()
+    gate_by_day = {d: float((blk or {}).get("exposure") or 1.0)
+                   for d, blk in (buy_plans or {}).items()}
+    for t in trades_exec:
+        bi = book.idx.get(t["date"])
+        if bi is None or bi < off:
+            continue
+        i0 = bi - off
+        if i0 + 1 > n:
+            continue
+        b_i = i0 + 1
+        H = int(t.get("horizon") or 0)
+        if H <= 0:
+            continue
+        e_i = None
+        if t.get("sell_date"):
+            se = book.idx.get(t["sell_date"])
+            e_i = (se - off) if (se is not None and se >= off) else None
+        if e_i is None:
+            e_i = b_i + H
+        if e_i <= b_i:
+            continue
+        sid = t.get("etf_sid")
+        if not sid and b_i < n:
+            sid = book.etf_of(t["sw_name"], cal[b_i])
+        if not sid:
+            continue
+        # 权重按账本下标算（与引擎建仓时 plan_w(book, sid, k) 的 k 同一坐标系）
+        w = plan_w(book, sid, min(off + b_i, len(bk)), t.get("composite"),
+                   RC["risk_parity"], RC["rp_window"], PF["score_tilt"])
+        sids.add(sid)
+        row = [t["sw_name"], sid, round(float(w), 6),
+               round(float(t.get("composite") or 0.0), 2),
+               cal[e_i] if e_i < n else None, H, t.get("action")]
+        slot = days.setdefault(t["date"], {"e": round(gate_by_day.get(t["date"], 1.0), 4),
+                                           "p": []})
+        slot["p"].append(row)
+    # 排序与实际取用由前端按引擎规则做（综合分降序 → 每日上限 → 空槽 → 现金约束）
+    px_o: Dict[str, list] = {}
+    px_c: Dict[str, list] = {}
+    meta: Dict[str, dict] = {}
+    for sid in sorted(sids):
+        o, c = [None] * n, [None] * n
+        for i in range(n):
+            vo = book.open_(sid, off + i)
+            if vo:
+                o[i] = round(float(vo), 6)
+            vc = book.close(sid, off + i)
+            if vc:
+                c[i] = round(float(vc), 6)
+        px_o[sid], px_c[sid] = o, c
+        meta[sid] = {"n": book.listing.get(sid, {}).get("name", sid)}
+    return {
+        "version": None,          # 由 pipeline 盖上 ENGINE_VERSION（避免反向依赖）
+        "as_of": dates[-1],
+        "dates": cal,
+        "K": int(PF.get("target_positions") or C.CLASSIFY["max_daily_picks"] * 4),
+        "max_holdings": int(C.CLASSIFY["max_daily_picks"] * 4),
+        "max_new_per_day": int(PF.get("max_new_per_day") or 0),
+        "cost": float(C.ROUND_TRIP_COST),
+        "cash_yield": float(RC["cash_yield"]),
+        "days": days,
+        "px": {"o": px_o, "c": px_c},
+        "meta": meta,
+    }
+
+
 # ------------------------------------------------------------------ 主入口
 def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str],
                  fwd: dict, regime_series: Dict[str, dict],
@@ -598,9 +695,51 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
         # 对照：未加风控的原始口径（等权 + 满仓），保留以便复核改进幅度
         pf_base = simulate_etf_portfolio(book, trades_exec, start_date=dates[0],
                                          max_holdings=C.CLASSIFY["max_daily_picks"] * 4)
+
+        # ---- 逐日建仓计划块（记录每日实际使用的建仓闸门 exposure，供 sim 导出）----
+        # 模拟循环按「信号日 T 的下一个交易日 T+1」迭代，因此数据末端的 T 没有对应迭代，
+        # 这里补一份：权重用最后一天及之前的数据算（无前视），暴露系数取当日值。
+        buy_plans = dict(pf_etf.get("plans") or {})
+        _last = dates[-1]
+        if _last not in buy_plans:
+            _maxh = C.CLASSIFY["max_daily_picks"] * 4
+            _picks = []
+            for _p in ((conclusions.get(_last) or {}).get("picks") or []):
+                _sid = book.etf_of(_p["name"], _last)
+                if not _sid:
+                    continue
+                _picks.append([_p["name"], _sid,
+                               round(plan_w(book, _sid, len(book.dates), _p.get("composite"),
+                                            RC["risk_parity"], RC["rp_window"], PF["score_tilt"]), 4),
+                               round(float(_p.get("composite") or 0), 2)])
+            buy_plans[_last] = {
+                "date": _last, "buy_date": None,
+                # 下一交易日的闸门未知，取最近一日（生产配置下恒为 1.0）。
+                # 注意这里**不能**用 pf_etf["exposure"][-1]——那是「已投出比例」
+                # （结果），不是建仓闸门（输入），会低估下一日的买入预算。
+                "exposure": round(float((pf_etf.get("gate") or [1.0])[-1]), 4),
+                "max_holdings": int(_maxh),
+                "max_new_per_day": int(PF["max_new_per_day"] or 0),
+                "room": int(max(0, _maxh - int(pf_etf["holdings"][-1]))),
+                "book": [[_s, _bd, _w, 0] for _s, _bd, _w in (pf_etf.get("end_book") or [])],
+                "picks": _picks,
+            }
+        # 「随机入场、持有一年」的分布（独立起账口径）：预期管理用。
+        # 与 perf_stats.rolling_1y（同一条曲线的滚动窗口）是**两个不同问题**，
+        # 页面上分开列示：后者隐含"从数据起点就一直在场"，前者才是"我某天进场会怎样"。
+        roll_fresh = rolling_fresh_entry(
+            book, trades_exec, horizon=252,
+            max_holdings=C.CLASSIFY["max_daily_picks"] * 4,
+            target_positions=PF["target_positions"],
+            risk_parity=RC["risk_parity"], rp_window=RC["rp_window"],
+            vol_target=RC["vol_target"], vol_window=RC["vol_window"],
+            vol_floor=RC["vol_floor"], cash_yield=RC["cash_yield"],
+            score_tilt=PF["score_tilt"], max_new_per_day=PF["max_new_per_day"],
+            cap_series=cap_series)
         # 暴露下限敏感性：把「降回撤」与「年化」的取舍显式摆出来
         floor_scan = []
-        for f in C.RISK_CONTROL_FLOORS:
+        # vol_target 停用后，vol_floor 不再参与任何计算：再扫是浪费（每档结果完全相同）
+        for f in ([] if RC["vol_target"] is None else C.RISK_CONTROL_FLOORS):
             if abs(f - RC["vol_floor"]) < 1e-9:
                 s = pf_etf["stats"]
             else:
@@ -728,22 +867,29 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
         settlement = {
             "basis": (
                 "收益以真实可交易行业 ETF 结算：信号日 T 收盘后出结论，T+1 开盘买入，"
-                f"持有建议周期后收盘卖出；双边成本 {C.ROUND_TRIP_COST*100:.2f}%"
-                "（佣金万二 + 滑点万五，ETF 免印花税）。"
-                "ETF 上市之前的行业不参与结算，不用行业指数回填。"
+                + f"持有建议周期后收盘卖出；双边成本 {C.ROUND_TRIP_COST*100:.2f}%"
+                + "（佣金万二 + 滑点万五，ETF 免印花税）。"
+                + "ETF 上市之前的行业不参与结算，不用行业指数回填。"
                 + ("结算取价已做 ETF 份额折算复权（拆分/合并等价值中性事件不记为盈亏，"
-                   f"检出阈值 {C.QFQ_BREAK_THRESH:.0%}，见 engine/qfq.py）。"
-                   if C.ETF_QFQ else "")
-                +
-                f"主口径含组合风控：持仓按 1/σ 分配风险预算"
-                f"（σ 用 {RC['rp_window']} 日已实现波动），"
-                f"组合已实现波动高于 {RC['vol_target']:.0%} 时按比例降仓、"
-                f"最低 {RC['vol_floor']:.0%}，未投入部分按 {RC['cash_yield']:.1%} 计现金收益。"
-                f"组合加权与建仓节奏：持仓权重 ∝ (综合分/50)^{PF['score_tilt']}，"
-                f"每日最多新建 {PF['max_new_per_day']} 个仓位。"
-                f"结论前置过滤：剔除 {n_demoted} 条「事前即自相矛盾或追高」的结论"
-                "（120日相对行业等权超额为负 / 价格位于近60日区间顶部 5%），"
-                "它们被降级为回避并保留在回避清单里，可逐条复核。"
+                   + f"检出阈值 {C.QFQ_BREAK_THRESH:.0%}，见 engine/qfq.py）。" if C.ETF_QFQ else "")
+                + "主口径是**有限资金池的可执行账户**：初始本金一笔钱，"
+                + "此后**卖出所得是唯一资金来源**；建仓金额 = min(账户总值 × 入场闸门 ÷ "
+                + f"{PF.get('target_positions', 24)}，可用现金)，建仓预算再按 1/σ "
+                + f"（σ 用 {RC['rp_window']} 日已实现波动）× (综合分/50)^{PF['score_tilt']} 倾斜。"
+                + "**持仓权重建立后随价格漂移，不再被拉回目标（没有每日再平衡）**，"
+                + (("入场闸门已全部停用（ark-1.8.1：可执行口径下它们只压新仓预算、压不了存量，"
+                    + "实测为负贡献），建仓预算不再随波动/环境缩放；想压尾部请调低目标持仓笔数 K。")
+                   if (RC.get("vol_target") is None
+                       and not (RC.get("exposure_cap") or {}).get("enabled"))
+                   else (f"入场闸门（波动目标 {RC['vol_target']:.0%} 按比例缩减预算、下限 "
+                         + f"{RC['vol_floor']:.0%}，叠加 F5 暴露上限）只影响**新仓预算**，"
+                         + "无法降低存量暴露——存量只能靠到期退出。"))
+                + "买入在 T+1 开盘、卖出在到期日收盘（当日卖出所得次日可用），"
+                + f"未投入现金按 {RC['cash_yield']:.1%} 计息，每日最多新建 "
+                + f"{PF['max_new_per_day']} 个仓位。"
+                + f"结论前置过滤：剔除 {n_demoted} 条「事前即自相矛盾或追高」的结论"
+                + "（120日相对行业等权超额为负 / 价格位于近60日区间顶部 5%），"
+                + "它们被降级为回避并保留在回避清单里，可逐条复核。"
             ),
             # 风控开关与「回撤 vs 年化」的显式取舍
             "risk_control": {
@@ -771,7 +917,8 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                 "rule": ("持仓权重 ∝ (综合分/50)^tilt（替代等权），"
                          f"tilt={PF['score_tilt']}；每日最多新建 "
                          f"{PF['max_new_per_day']} 个仓位（总容量上限不变）。"),
-                "why": ("实验台（engine/lab_opt.py）对『选的更准』与『配的更稳』做了分离测试："
+                "why": ("反事实扫描对『选的更准』与『配的更稳』做了分离测试（脚本已清理，"
+                        "结论见 docs/口径变更-2026-09-23-可执行账户.md）："
                         "分数加权对成交集合零影响，只让高分结论占更大权重；"
                         "每日建仓上限解决的是信号密集日质量参差、资金被摊薄的问题。"
                         "tilt 在 0.25~0.5 之间表现一致（宽平台，不是拟合出来的尖峰）。"),
@@ -825,7 +972,7 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
             "avg_excess": round(float(ex_arr_e.mean()), 4) if ex_arr_e.size else None,
             "avg_maxdd": round(float(np.mean(
                 [t["maxdd"] for t in trades if t["maxdd"] is not None] or [0])), 4),
-            "stats": pf_etf["stats"],
+            "stats": {**pf_etf["stats"], "rolling_1y_fresh": roll_fresh},
             "curve": {"dates": pf_etf["dates"], "nav": pf_etf["nav"],
                       "bench": pf_etf["bench"]},
             # 平均持仓时间：组合口径（真实成交的那批）与信号口径（全部可结算结论）
@@ -849,6 +996,12 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
                          "与曲线上的 B/S 点同一批成交；组合口径只统计真实建仓的那批，"
                          "信号口径统计全部可结算结论（含因容量上限未建仓的）。"),
             },
+            # 逐日建仓计划块（内部结构，仅供 build_sim_export 取用「建仓闸门」）：
+            # 不再单独落盘，由 pipeline 摘掉；前端要的全部在 sim_export 里。
+            "buy_plans": buy_plans,
+            # 「我的持仓」影子账户的完整输入（候选 + 前复权开/收盘价）：
+            # 同样由 pipeline 摘出来落成 data/sim.json，前端逐日重放用户的真实账本。
+            "sim_export": build_sim_export(book, dates, trades_exec, buy_plans, RC, PF),
             # 曲线上逐笔成交事件（B/S 点）：与 curve 同一套成交价与成本口径
             "events": pf_etf["events"],
             "etf_names": pf_etf["etf_names"],

@@ -50,7 +50,7 @@ import rules as RULES  # noqa: E402
 #       → ark-1.7.0-stability（方案 B 落参：PB 闸门下限 0.45→0.55（G3 剂量最优）+
 #         暴露上限环境档加陡 PANIC.10/DEFEND.35/NEUTRAL.70、动量 floor 0.35→0.25；
 #         复盘窗口起点 2016→2018（ETF 覆盖度不足）。见 stability-overlay 实验）
-ENGINE_VERSION = "ark-1.7.0-stability"
+ENGINE_VERSION = "ark-1.8.1-rp-only-k24"
 
 
 def config_hash() -> str:
@@ -509,6 +509,17 @@ def main():
 
     print("[5/6] 运行复盘引擎 ...")
     rep = RV.build_review(fs, conclusions, dates, ctx["fwd"], ctx["regime"], book=book)
+    # 「我的持仓」影子账户的完整输入：落成**单文件** data/sim.json，从 review.json 里摘掉。
+    # 前端只需要本金 + 入市起始日，就能用同一份候选与行情把用户自己的账本逐日重放出来
+    # （现金余额、逐笔成本/市值/浮盈）。比 2110 份小 JSON 的计划块少 2100 个请求，也小得多。
+    sim = (rep.get("settlement") or {}).pop("sim_export", None)
+    if sim:
+        sim["version"] = ENGINE_VERSION
+        p = f"{C.OUT_DIR}/sim.json"
+        json.dump(sim, open(p, "w"), ensure_ascii=False)
+        print(f"      sim.json  {os.path.getsize(p)/1024:.0f} KB"
+              f"（{len(sim['days'])} 个信号日 / {len(sim['px']['o'])} 个标的行情）")
+    (rep.get("settlement") or {}).pop("buy_plans", None)   # 计划块已被 sim.json 取代
     # 生效规则快照：数值全部从 config.py 直读，供「引擎」页展示，
     # 避免前端硬编码导致配置改了页面不跟着变。
     rep["rules"] = RULES.build_rules(settlement=rep.get("settlement"), today=today)
@@ -527,7 +538,7 @@ def main():
               f"平均持仓 {hp.get('avg_days')} 个交易日")
 
     print("[6/6] 完成")
-    for f in ("history.json", "today.json", "review.json"):
+    for f in ("history.json", "today.json", "review.json", "sim.json"):
         p = f"{C.OUT_DIR}/{f}"
         print(f"      {p}  {os.path.getsize(p)/1024:.0f} KB")
     print(f"      {day_dir}/  {len(dates)} 个逐日文件（完整研判 + 出手判断）")
