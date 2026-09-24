@@ -84,7 +84,6 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
       .catch(() => setBreaks([]))
   }, [])
 
-  const years = Object.keys(st.by_year || {})
   const phases = (st.by_phase || []).filter((p: any) => p.n > 0)
   const coverage = (st.coverage || []).filter((c: any) => Number(c.year) >= 2018)
 
@@ -99,6 +98,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   // 只回答「是否持仓、持仓多少」；实际投入的资金比例由波动目标决定，不在这条轴上表达。
   const pos = st.position || {}
   const posHoldings: number[] = pos.holdings || []
+  const posExposure: number[] = pos.exposure || []
   const posMax: number = pos.max_holdings || 32
   // 平均持仓时间：组合口径（真实成交的那批）与信号口径（全部可结算结论）
   const hold = st.holding || {}
@@ -134,6 +134,39 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const viewDates = allDates.slice(lo, hi + 1)
   const viewNav = allNav.slice(lo, hi + 1).map((v) => v / navBase)
   const viewBench = allBench.slice(lo, hi + 1).map((v) => v / benchBase)
+
+  // ==================== 分年度（账户口径） ====================
+  // 账户收益/年化/基准/超额来自同一条资金曲线；平均投出、平均持仓来自逐日仓位序列；
+  // 结论数/胜率/结论均收益来自信号口径 by_year；成交 = 该年建仓（B）事件数。
+  // 与年份页签同一过滤规则：不足 20 个交易日的残年不列（曲线第 0 点是 2017-12-29 估值基点）。
+  const yearly = React.useMemo(() => {
+    const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0)
+    const out: any[] = []
+    let i = 0
+    while (i < allDates.length) {
+      const y = allDates[i].slice(0, 4)
+      let j = i
+      while (j + 1 < allDates.length && allDates[j + 1].slice(0, 4) === y) j++
+      const days = j - i + 1
+      if (days >= 20) {
+        const base = allNav[i - 1] ?? allNav[i]
+        const bbase = allBench[i - 1] ?? allBench[i]
+        const ret = base > 0 ? allNav[j] / base - 1 : 0
+        const bret = bbase > 0 ? allBench[j] / bbase - 1 : 0
+        const v = (st.by_year || {})[y] || {}
+        out.push({
+          y, ret, bench: bret, excess: ret - bret,
+          ann: ret > -1 ? Math.pow(1 + ret, 243 / days) - 1 : 0,
+          dep: mean(posExposure.slice(i, j + 1)), hold: mean(posHoldings.slice(i, j + 1)),
+          n: v.n, win: v.win_rate, avgRet: v.avg_ret, avgEx: v.avg_excess,
+          buys: events.filter((e: any) => e.k === 'B' && e.i >= i && e.i <= j).length,
+          partial: days < 200,
+        })
+      }
+      i = j + 1
+    }
+    return out
+  }, [allDates, allNav, allBench, posExposure, posHoldings, events, st.by_year])
 
   // 明细表右上角的年化收益：全区间直接用结算层 cagr（引擎同一来源）；
   // 选具体年份则用该年区间净值实时年化（起点 = 上一年末收盘，与图表归一化口径一致）
@@ -801,28 +834,52 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
         </div>
       </Card>
 
-      <div className="grid g2">
-        <Card title="分年度表现（ETF 结算）">
-          <table>
-            <thead><tr><th>年份</th><th style={{ textAlign: 'right' }}>结论数</th><th style={{ textAlign: 'right' }}>胜率</th><th style={{ textAlign: 'right' }}>平均收益</th><th style={{ textAlign: 'right' }}>平均超额</th></tr></thead>
-            <tbody>
-              {years.map((y) => {
-                const v = st.by_year[y]
-                return (
-                  <tr key={y}>
-                    <td>{y}</td>
-                    <td className="num" style={{ textAlign: 'right' }}>{v.n}</td>
-                    <td className="num" style={{ textAlign: 'right' }}>{pct(v.win_rate, 2, false)}</td>
-                    <td className="num" style={{ textAlign: 'right', color: (v.avg_ret || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_ret)}</td>
-                    <td className="num" style={{ textAlign: 'right', color: (v.avg_excess || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(v.avg_excess)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </Card>
+      <Card title="分年度表现（账户口径 · 真实 ETF 结算）"
+        extra={<span className="muted">账户 = 有限资金池可执行账户 · 基准 = 沪深300ETF</span>}>
+        <table>
+          <thead>
+            <tr>
+              <th>年份</th>
+              <th style={{ textAlign: 'right' }}>账户收益</th>
+              <th style={{ textAlign: 'right' }}>年化</th>
+              <th style={{ textAlign: 'right' }}>基准</th>
+              <th style={{ textAlign: 'right' }}>超额</th>
+              <th style={{ textAlign: 'right' }}>平均投出</th>
+              <th style={{ textAlign: 'right' }}>平均持仓</th>
+              <th style={{ textAlign: 'right' }}>结论 / 胜率</th>
+              <th style={{ textAlign: 'right' }}>结论均收益</th>
+              <th style={{ textAlign: 'right' }}>成交</th>
+            </tr>
+          </thead>
+          <tbody>
+            {yearly.map((r: any) => (
+              <tr key={r.y}>
+                <td>{r.y}{r.partial ? <span className="muted small">（未完）</span> : ''}</td>
+                <td className="num" style={{ textAlign: 'right', fontWeight: 700, color: r.ret >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(r.ret)}</td>
+                <td className="num" style={{ textAlign: 'right', color: r.ann >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(r.ann)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(r.bench)}</td>
+                <td className="num" style={{ textAlign: 'right', color: r.excess >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(r.excess)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{pct(r.dep, 1, false)}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{num(r.hold, 1)} 笔</td>
+                <td className="num" style={{ textAlign: 'right' }}>{r.n ?? 0} / {r.n ? pct(r.win, 1, false) : '—'}</td>
+                <td className="num" style={{ textAlign: 'right', color: (r.avgRet || 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{r.n ? pct(r.avgRet) : '—'}</td>
+                <td className="num" style={{ textAlign: 'right' }}>{r.buys}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="note" style={{ marginTop: 8 }}>
+          <b>账户列</b>（收益 / 年化 / 基准 / 超额 / 平均投出 / 平均持仓 / 成交）来自同一条
+          可执行账户资金曲线：年化按该年交易日数年化（未完年份显示"（未完）"）；
+          「平均投出」= 持仓市值 ÷ 账户总值 的年内均值，它决定上涨市里天然跑输满仓基准的幅度。
+          <b>结论列</b>（结论数 / 胜率=跑赢基准的比例 / 结论均收益）是信号口径，与账户列分母不同——
+          两者的落差正是"钱有没有跟上信号"的度量。2018 年有结论但 0 成交，是因为当年该行业
+          还没有可交易的 ETF（覆盖度见下表）。逐年归因（2024 信号饥荒、2025 现金拖累）见
+          <code>docs/年度收益归因-2022-2026.md</code>。
+        </div>
+      </Card>
 
-        <Card title="可交易标的覆盖度" extra={<span className="muted">每年末可结算行业数</span>}>
+      <Card title="可交易标的覆盖度" extra={<span className="muted">每年末可结算行业数</span>}>
           <Bars
             rows={coverage.map((c: any) => ({
               label: c.year, value: c.tradeable, text: `${c.tradeable} 个`,
@@ -833,9 +890,8 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
             行业 ETF 是真实约束：2018 年之前市场上只有个位数行业有可交易的 ETF，
             早期样本天然稀少且参考价值低，因此复盘窗口与覆盖度统计均从 2018 年起。
             越靠近当下，覆盖越完整，结论参考价值越高。
-          </div>
-        </Card>
-      </div>
+        </div>
+      </Card>
 
       <div className="grid g2">
         <Card title="做错了什么（归因分布）" extra={<span className="muted">共 {o.wrong || 0} 条错误结论</span>}>
