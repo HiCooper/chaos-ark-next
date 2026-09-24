@@ -246,7 +246,9 @@ export function EtfModal(props: EtfModalInput) {
 
   useEffect(() => {
     let alive = true
-    fetch(`data/etf/${sid}.json`)
+    // 展示层根目录：view/（不是数据层 data/）。由 engine/build_etf_webdata.py
+    // 从结算账簿切片而来，价格与结算取价同源。
+    fetch(`view/etf/${sid}.json`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => { if (alive) setData(j) })
       .catch((e) => { if (alive) setErr(String(e)) })

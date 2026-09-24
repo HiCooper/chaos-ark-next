@@ -22,8 +22,8 @@ export type OpenOpts = {
  * 与引擎名义账本的买点会分叉。所以该页打开时要带上自己的成交与统计窗口：
  *   open(sid, focusDate, { events: bookEvents(acct, sid), scope, curve })
  *
- * sid 解析优先用 data/etf/_index.json（build_etf_webdata.py 生成，覆盖全池 ETF，
- * 含从未成交的）；接口缺失时退回结算事件里出现过的 sid。
+ * sid 解析优先用 view/etf/_index.json（build_etf_webdata.py 生成的**展示层**切片，
+ * 覆盖全池 ETF，含从未成交的）；接口缺失时退回结算事件里出现过的 sid。
  *
  * 另外提供两个**只用当日及之前数据**的口径查询（历史页面不随新交易日变化）：
  *   · investedRatio(date)：当日**实际投出比例**（持仓市值 ÷ 账户总值，可执行账户口径）；
@@ -79,11 +79,11 @@ export function useEtfModal() {
 
 export function EtfModalHost({ settlement, children }: { settlement: any; children: React.ReactNode }) {
   const [target, setTarget] = useState<({ sid: string; focusDate?: string } & OpenOpts) | null>(null)
-  // data/etf/_index.json：code → {sid, name, sw}，覆盖面板全部 ETF
+  // view/etf/_index.json：code → {sid, name, sw}，覆盖面板全部 ETF（展示层切片）
   const [index, setIndex] = useState<Record<string, { sid: string; name: string }> | null>(null)
 
   useEffect(() => {
-    fetch('data/etf/_index.json')
+    fetch('view/etf/_index.json')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => setIndex(j.etfs || {}))
       .catch(() => setIndex(null))

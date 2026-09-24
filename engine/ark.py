@@ -35,6 +35,11 @@ ENGINE = os.path.join(ROOT, "engine")
 VENV = os.path.join(ROOT, ".venv")
 OUT_DIR = os.path.join(ROOT, "web", "public", "data")
 SITE_DATA = os.path.join(ROOT, "site", "data")
+# 展示层根目录（与数据层分开）：标的走势弹窗等「只给页面看」的产物。
+# 它不参与 L0→L3 重建链，也不持有自己的算法——由结算账簿切片而来（见
+# engine/build_etf_webdata.py），因此水位检查里它是「陈旧守卫」而非一层数据。
+VIEW_DIR = os.path.join(ROOT, "web", "public", "view")
+SITE_VIEW = os.path.join(ROOT, "site", "view")
 RAW_ROOT = os.path.join(ROOT, "data", "raw")
 AKSHARE_SKILL_VENV = os.path.expanduser(
     "~/.workbuddy/skills/akshare-data/.venv/bin/python")
@@ -105,37 +110,55 @@ def _jload(path: str):
 
 
 # ---------------------------------------------------------------- site 同步
-def sync_site(verbose: bool = True) -> dict:
-    """把 web/public/data 镜像到 site/data（部署副本）。
+def _mirror(src_root: str, dst_root: str) -> tuple:
+    """把 src_root 镜像到 dst_root：内容不同的复制、源里没有的删掉（含空壳目录）。
 
-    只镜像 data/ 这一层，不碰 site/assets 与 index.html（那是前端构建产物，
+    「源里没有 → 目标删掉」是刻意的：站点是对外窗口，宁可少一个文件，也不能
+    留一个已经被数据层淘汰的旧文件在线上。
+    """
+    n_copy, n_del = 0, 0
+    os.makedirs(dst_root, exist_ok=True)
+    for root, _dirs, files in os.walk(src_root):
+        rel = os.path.relpath(root, src_root)
+        d = os.path.join(dst_root, rel) if rel != "." else dst_root
+        os.makedirs(d, exist_ok=True)
+        for fn in files:
+            s = os.path.join(root, fn)
+            t = os.path.join(d, fn)
+            if not os.path.exists(t) or _sha256(s) != _sha256(t):
+                shutil.copy2(s, t)
+                n_copy += 1
+    for root, _dirs, files in os.walk(dst_root, topdown=False):
+        rel = os.path.relpath(root, dst_root)
+        s_root = os.path.join(src_root, rel) if rel != "." else src_root
+        for fn in files:
+            if not os.path.exists(os.path.join(s_root, fn)):
+                os.remove(os.path.join(root, fn))
+                n_del += 1
+        if rel != "." and not os.path.isdir(s_root) and not os.listdir(root):
+            os.rmdir(root)
+    return n_copy, n_del
+
+
+def sync_site(verbose: bool = True) -> dict:
+    """把 web/public 的两个根分别镜像到 site/（部署副本）：
+
+        data/   数据层导出（L3：today / day / review / sim / experiments …）
+        view/   展示层导出（标的走势弹窗：etf/<sid>.json…）
+
+    **两层分开镜像、分开存放**，与仓库内的分层一致：数据层由管线产出，
+    展示层由结算账簿切片而来，改一层不会误伤另一层。
+
+    只镜像 data/ 与 view/，不碰 site/assets 与 index.html（那是前端构建产物，
     有自己的同步规则：cp -R web/dist/assets/. site/assets/）。
     镜像语义：源里没有的文件在目标里也删掉，避免对外提供过期数据。
     """
-    n_copy, n_del = 0, 0
-    os.makedirs(SITE_DATA, exist_ok=True)
-    for root, _dirs, files in os.walk(OUT_DIR):
-        rel = os.path.relpath(root, OUT_DIR)
-        dst_root = os.path.join(SITE_DATA, rel) if rel != "." else SITE_DATA
-        os.makedirs(dst_root, exist_ok=True)
-        for fn in files:
-            src = os.path.join(root, fn)
-            dst = os.path.join(dst_root, fn)
-            if not os.path.exists(dst) or _sha256(src) != _sha256(dst):
-                shutil.copy2(src, dst)
-                n_copy += 1
-    # 反向清理：site/data 里源已不存在的文件
-    for root, _dirs, files in os.walk(SITE_DATA):
-        rel = os.path.relpath(root, SITE_DATA)
-        src_root = os.path.join(OUT_DIR, rel) if rel != "." else OUT_DIR
-        for fn in files:
-            dst = os.path.join(root, fn)
-            if not os.path.exists(os.path.join(src_root, fn)):
-                os.remove(dst)
-                n_del += 1
+    n_copy, n_del = _mirror(OUT_DIR, SITE_DATA)
+    v_copy, v_del = _mirror(VIEW_DIR, SITE_VIEW)
     if verbose:
-        print(f"  site/data 镜像完成：更新 {n_copy} 个，清理 {n_del} 个过期文件")
-    return {"copied": n_copy, "removed": n_del}
+        print(f"  site 镜像完成：data 更新 {n_copy} 个 / 清理 {n_del} 个；"
+              f"view 更新 {v_copy} 个 / 清理 {v_del} 个")
+    return {"copied": n_copy + v_copy, "removed": n_del + v_del}
 
 
 # ---------------------------------------------------------------- 水位
@@ -164,10 +187,11 @@ def water_level() -> dict:
     lv["L1_etf_panel"] = ({"last": etfp["dates"][-1], "etfs": len(etfp.get("listing", {}))}
                           if etfp else None)
 
-    # 弹窗走势数据（web/public/data/etf/*.json）：不在 L0→L3 的重建链上，必须显式重建。
-    # 漏掉它就会出现「账户已盯市到最新交易日、弹窗里的标的涨跌却停在两天前」。
-    etfw = _jload(os.path.join(OUT_DIR, "etf", "_index.json"))
-    lv["L3_etf_webdata"] = ({"last": etfw.get("last"), "etfs": etfw.get("n"),
+    # 展示层·标的走势弹窗（web/public/view/etf/*.json）：**不是数据层**，
+    # 不参与 L0→L3 重建链，必须显式重建。这里登记它只为「陈旧守卫」：
+    # 漏掉就会出现「账户已盯市到最新交易日、弹窗里的标的涨跌却停在两天前」。
+    etfw = _jload(os.path.join(VIEW_DIR, "etf", "_index.json"))
+    lv["VIEW_etf_modal"] = ({"last": etfw.get("last"), "etfs": etfw.get("n"),
                              "days": etfw.get("days")} if etfw else None)
 
     fmeta = _jload(os.path.join(ROOT, "cache", "features.npz.meta.json"))
@@ -191,14 +215,17 @@ def water_level() -> dict:
     lv["L3_day_files"] = n_day
     lv["site_day_files"] = n_site_day
 
-    def _same(a, b):
-        t = _jload(os.path.join(OUT_DIR, a))
-        s = _jload(os.path.join(SITE_DATA, a))
+    def _same(rel, src_root, dst_root):
+        t = _jload(os.path.join(src_root, rel))
+        s = _jload(os.path.join(dst_root, rel))
         return (t is not None and s is not None
                 and json.dumps(t, sort_keys=True) == json.dumps(s, sort_keys=True))
-    lv["site_synced"] = {f: _same(f, f)
+    lv["site_synced"] = {f: _same(f, OUT_DIR, SITE_DATA)
                          for f in ("today.json", "history.json", "review.json",
                                    "experiments.json") if os.path.exists(os.path.join(OUT_DIR, f))}
+    # 展示层也要检查是否同步（它有自己的根目录，不能只看 data/）
+    if os.path.exists(os.path.join(VIEW_DIR, "etf", "_index.json")):
+        lv["site_synced"]["view/etf/_index.json"] = _same("etf/_index.json", VIEW_DIR, SITE_VIEW)
     return lv
 
 
@@ -247,9 +274,9 @@ def cmd_status() -> int:
     sync = lv.get("site_synced") or {}
     bad = [k for k, ok in sync.items() if not ok]
     if bad:
-        print(f"  ✗ site/data 与 web/public/data 不一致：{bad} → 运行 python3 engine/ark.py sync")
+        print(f"  ✗ site 与 web/public 不一致（{', '.join(bad)}）→ 运行 python3 engine/ark.py sync")
     else:
-        print("  ✓ site/data 已同步")
+        print("  ✓ site 已同步（data 数据层 + view 展示层）")
     return 0 if (len(uniq) == 1 and not bad) else 1
 
 
@@ -273,13 +300,15 @@ def cmd_init() -> int:
     if _run(py, "build_etf_panel.py", ["--refresh"], "init_etf") != 0:
         raise SystemExit("ETF 面板构建失败")
 
+    # 展示层只依赖 cache/etf_panel.json（与结算层同一次 load_etf_book 调用的结果），
+    # 先于管线重建，这样管线写 review.json 时引擎页「数据分层」的数字已是真数据。
+    print("[init/4] 展示层·标的走势数据（弹窗用）...")
+    if _run(py, "build_etf_webdata.py", [], "init_etf_web") != 0:
+        raise SystemExit("标的走势数据构建失败")
+
     print("[init/4] 全量管线（L2 特征 + L3 重放 ≈5min）...")
     if _run(py, "pipeline.py", ["--refresh", "--all"], "init_pipeline") != 0:
         raise SystemExit("管线运行失败")
-
-    print("[init/4] 标的走势数据（弹窗用）...")
-    if _run(py, "build_etf_webdata.py", [], "init_etf_web") != 0:
-        raise SystemExit("标的走势数据构建失败")
 
     print("[init/4] 同步部署副本 ...")
     sync_site()
@@ -351,6 +380,14 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
     else:
         print("[daily/4] 跳过抓取（--skip-fetch）")
 
+    # 展示层·标的走势弹窗：它**只依赖 cache/etf_panel.json + panel.json**（切片自
+    # 「与结算层同一次 load_etf_book 调用」的结果），不依赖管线重放，所以放在管线
+    # 之前重建。这样管线写 review.json 时它已是最新，引擎页「数据分层」上的规模数字
+    # 不会比真数据旧一天。漏跑会表现成「账户已盯市到最新交易日、点开 ETF 却停在两天前」。
+    print("[daily/4] 重建展示层·标的走势数据（弹窗用）...")
+    if _run(py, "build_etf_webdata.py", [], "daily_etf_web") != 0:
+        raise SystemExit("标的走势数据构建失败")
+
     # 运行前快照今日结论：跑完后对比，回答「盘前复核：结论变了吗」
     # （两段式节奏：当晚 15:05 用实时兜底出预备结论 → 次晨官方出数后重跑复核）
     _prev_today = _jload(os.path.join(ROOT, "web", "public", "data", "today.json")) or {}
@@ -374,12 +411,6 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
                          "修好再发布；生成齐全骨架：python3 engine/lab_registry.py new <id> "
                          "--kind experiment|change --title '…' --layer '…'")
 
-    # 弹窗走势数据必须跟着 ETF 面板一起重建：它不在 L0→L3 的依赖链上，
-    # 漏跑就会出现「我的持仓已盯市到 09-23、点开 ETF 却显示涨跌止于 09-21」。
-    print("[daily/4] 重建标的走势数据（弹窗用）...")
-    if _run(py, "build_etf_webdata.py", [], "daily_etf_web") != 0:
-        raise SystemExit("标的走势数据构建失败")
-
     print("[daily/4] 同步部署副本 ...")
     sync_site()
 
@@ -393,9 +424,9 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
     moved = sorted({d for _, d in _last_dates(lv1)} - {d for _, d in _last_dates(lv0)})
     print(f"\n  水位推进: {moved if moved else '无（源未出数 / 已是最新）'}")
     if not all(lv1.get("site_synced", {}).values()):
-        print("  ✗ site/data 未同步，请检查")
+        print("  ✗ site 未同步，请检查（data 数据层 / view 展示层）")
         return 1
-    print("  ✓ site/data 已同步")
+    print("  ✓ site 已同步（data 数据层 + view 展示层）")
     return 0
 
 
@@ -429,24 +460,28 @@ def cmd_verify() -> int:
     if r.returncode != 0:
         return 1
 
-    # 弹窗红线必须就是结算取价：复权参照不同（行业指数 vs 全池中位数）会算出不同的
-    # 复权因子，表现为「页面上这只 ETF 浮动 +3,399、弹窗里却是 +5,586」。
-    print("[verify] 弹窗走势与结算取价一致性 ...")
+    # 弹窗红线必须就是结算取价。展示层已改成**只消费结算账簿**（同一次
+    # load_etf_book 调用，连 config.ETF_QFQ 开关语义都共用），所以红线在结构上
+    # 已不可能违反——这项检查保留为**回归断言**：万一以后有人给展示层加回
+    # 「自己算一遍复权」，这里会立刻拦住。
+    print("[verify] 弹窗走势与结算取价一致性（展示层回归断言）...")
     bad = _etf_webdata_vs_settlement()
     if bad:
         print(f"  ✗ {len(bad)} 处不一致（弹窗走势 ≠ 结算取价，复权口径可能不同源）")
         for b in bad[:8]:
             print("      " + b)
-        print("     修：python3 engine/build_etf_webdata.py（必须与 pipeline.load_etf_book 同参照）")
+        print("     修：python3 engine/build_etf_webdata.py"
+              "（展示层只允许消费 pipeline.load_etf_book 的结果，不得自行复权）")
         return 1
     print("  ✓ 弹窗复权价 = 结算取价（逐位相同）")
 
     lv = water_level()
     fp = lv.get("L2_features_fp") or {}
 
-    # 各层水位必须同日：ETF 面板更新了、但弹窗走势数据没重建，就会让页面上的
-    # 标的涨跌停在旧日期（账户已盯市到最新交易日）。这里显式拦住。
-    print("[verify] 各层水位一致性 ...")
+    # 数据层各层必须同日；展示层（VIEW_etf_modal）也必须同日——ETF 面板更新了、
+    # 但走势切片没重建，就会让页面上的标的涨跌停在旧日期（账户已盯市到最新交易日）。
+    # 展示层不是一层数据，这里对它做的是「陈旧守卫」而不是依赖链校验。
+    print("[verify] 各层水位一致性（含展示层陈旧守卫）...")
     wd = dict(_last_dates(lv))
     wd.pop("L0_realtime_fill", None)          # 兜底日期提示，不是一层数据
     uniq = sorted({d for d in wd.values() if d})
@@ -492,12 +527,15 @@ def cmd_verify() -> int:
 
 
 def _etf_webdata_vs_settlement() -> list:
-    """弹窗走势数据（etf/<sid>.json 的 adj）必须与结算层取价（sim.json 的 px.c）逐位相同。
+    """展示层走势（view/etf/<sid>.json 的 adj）必须与结算层取价（sim.json 的 px.c）逐位相同。
 
-    两者都源自 cache/etf_panel.json 的份额折算复权，但**参照不同就会算出不同的因子**：
-    pipeline.load_etf_book() 用申万行业指数当参照，build_etf_webdata.py 若漏传参照
-    会退化成全池中位数——复权价能差几个百分点，于是同一个持仓在页面上和弹窗里
-    显示成两个市值。这里抽查每只结算标的最近 3 个有价日，逐位比对。
+    现在两边**同源**：展示层由 build_etf_webdata.py 通过 pipeline.load_etf_book()
+    切片而来，与结算层是同一次调用、同一参数、同一 ETF_QFQ 开关语义。所以这项
+    检查是**回归断言**而不是"可能踩的坑"：它拦的是"以后有人给展示层加回一套自己
+    的复权实现"（2026-09-24 之前的真实情形——当时展示层自己调 qfq 且无视 ETF_QFQ
+    开关，一旦参照不同就相差几个百分点，同一个持仓在页面上和弹窗里显示成两个市值）。
+
+    这里抽查每只结算标的最近 3 个有价日，逐位比对。
     """
     sim = _jload(os.path.join(OUT_DIR, "sim.json"))
     if not sim:
@@ -505,9 +543,9 @@ def _etf_webdata_vs_settlement() -> list:
     sdates = sim.get("dates") or []
     bad = []
     for sid, arr in (sim.get("px", {}).get("c") or {}).items():
-        f = _jload(os.path.join(OUT_DIR, "etf", f"{sid}.json"))
+        f = _jload(os.path.join(VIEW_DIR, "etf", f"{sid}.json"))
         if not f:
-            bad.append(f"{sid} 走势文件缺失")
+            bad.append(f"{sid} 走势文件缺失（view/etf/{sid}.json）")
             continue
         eidx = {d: i for i, d in enumerate(f.get("dates") or [])}
         checked = 0

@@ -85,18 +85,24 @@ def panel_fingerprint(panel: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def load_etf_book() -> Optional[ST.EtfBook]:
+def load_etf_book(with_report: bool = False):
     """加载 ETF 账簿（真实结算用）。缺失时返回 None，收益退化为信号口径。
 
     结算取价口径由 config.ETF_QFQ 决定（2026-09-23 确认启用）：面板存不复权价，
     ETF 发生份额折算（拆分/合并）时价格按整数倍跳变而持有人价值不变，不复权直接
     算收益会记成 ±50%~+220% 的虚假盈亏。L0 原始层不动，仅在加载账簿时还原。
     对照实验时用环境变量 ARK_QFQ=0 临时关闭。
+
+    with_report=True 时返回 (book, breaks)：breaks 是本次复权的断点报告。
+    **展示层（标的走势弹窗）必须用这个报告，不能另调一次 qfq** —— 复权只能有一份
+    实现，否则"显示的因子"与"乘进价格里的因子"会来自两次不同调用（2026-09-24 前
+    的实际情形），参照一变就两处市值对不上。
     """
     path = f"{C.CACHE_DIR}/etf_panel.json"
     if not os.path.exists(path):
         print("      [warn] 未找到 etf_panel.json，收益将只按行业指数口径计算")
-        return None
+        return (None, {}) if with_report else None
+    rep: dict = {}
     panel = ST.load_etf_panel(path)
     if C.ETF_QFQ:
         import qfq
@@ -104,7 +110,8 @@ def load_etf_book() -> Optional[ST.EtfBook]:
         panel, rep = qfq.apply_qfq(panel, sw_panel, verbose=False, thresh=C.QFQ_BREAK_THRESH)
         n = sum(len(v) for v in rep.values())
         print(f"      [qfq] 份额折算复权已启用：修正 {n} 处断点 / {len(rep)} 只 ETF")
-    return ST.EtfBook(panel)
+    book = ST.EtfBook(panel)
+    return (book, rep) if with_report else book
 
 
 def load_context(refresh: bool = False, last_n: int = 3400) -> dict:

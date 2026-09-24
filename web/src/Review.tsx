@@ -75,10 +75,10 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   const [basisOpen, setBasisOpen] = useState(false)
   // 标的走势核验弹窗：宿主在 App 层（EtfModalHost），本页只拿 open 句柄
   const { open: openEtf } = useEtfModal()
-  // 全池份额折算断点清单（web/public/data/etf/_breaks.json，由 engine/build_etf_webdata.py 生成）
+  // 全池份额折算断点清单（web/public/view/etf/_breaks.json，展示层切片，由 engine/build_etf_webdata.py 生成）
   const [breaks, setBreaks] = useState<any[] | null>(null)
   useEffect(() => {
-    fetch('data/etf/_breaks.json')
+    fetch('view/etf/_breaks.json')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => setBreaks(j.breaks || []))
       .catch(() => setBreaks([]))
