@@ -31,7 +31,7 @@ ATTR_LABEL = {
     "MAINLINE_BROKEN": "主线证伪：出手时所属行业并未处于长期上升趋势，反转逻辑落空",
     "TIMING_LATE": "追高：出手时价格已显著高于长期均线，属于超涨位置",
     "TIMING_EARLY": "埋伏过早：左侧进场后先经历明显回撤",
-    "HORIZON_ERROR": "周期估错：方向对但持有窗口错配（过短或过长）",
+    "HORIZON_ERROR": "周期错配：本周期亏损，但相邻窗口为正且好 10pp 以上（事后视角）",
     "BETA_DRAG": "系统性拖累：全市场下行，行业难以独善其身",
     "VOL_BLOWUP": "波动失控：持仓期波动显著放大，风险收益比恶化",
 }
@@ -155,10 +155,16 @@ def evaluate_pick(fs: FeatureStore, day: dict, pick: dict, i: int,
             cand.append("REGIME_MISREAD")
         if pick["action"] == "AMBUSH" and st["dd"] is not None and st["dd"] < -0.08 and st["ret"] > -0.02:
             cand.append("TIMING_EARLY")
+        # 周期错配：必须同时满足「本周期为负 + 相邻窗口为正 + 好 10pp 以上」。
+        # 2026-09-24 审计（engine/lab_horizon.py）：旧的「相邻窗口好 5pp 即命中」判据里，
+        # 对照组（RIGHT 结论）也有 38.8% 满足 → 它主要在度量"未来有波动"；且命中样本
+        # 91.9% 本周期绝对收益为负（平均超额 −10.94%）——那些是方向/择时错误，
+        # 不是"方向对、窗口错"。收紧后占错误比例从 56.3% 降到 ~11%。
         longer = fwd_stats(fs, pick["code"], i, min(H * 2, 120))
         shorter = fwd_stats(fs, pick["code"], i, max(H // 2, 5))
-        if ((longer and longer["ex_ew"] is not None and longer["ex_ew"] > ex + 0.05)
-                or (shorter and shorter["ex_ew"] is not None and shorter["ex_ew"] > ex + 0.05)):
+        cand_ex = [x["ex_ew"] for x in (longer, shorter)
+                   if x and x["ex_ew"] is not None]
+        if cand_ex and ex < 0 and max(cand_ex) > 0 and max(cand_ex) - ex > 0.10:
             cand.append("HORIZON_ERROR")
         v0 = fs.series(pick["code"], "vol20")[i]
         v1 = fs.series(pick["code"], "vol20")[i + H] if i + H < len(fs.dates) else None
@@ -381,8 +387,13 @@ def build_improvements(evals: List[dict]) -> List[dict]:
             "title": f"周期估计偏差占比 {share:.1%}，需要重新校准 analog 的样本窗",
             "evidence": {"horizon_buckets": horizon_rows,
                          "error_cases": len(err), "total": len(done)},
-            "suggestion": "把 analog 的 K 近邻从 40 提到 60，并在风险调整项中把回撤惩罚系数从 0.6 提到 0.8（更偏好短窗口）。",
-            "expected_impact": f"影响 {len(err)}/{len(done)} 条结论的窗口选择",
+            "suggestion": ("周期本身几乎不可预测，别再打磨 analog 估计：审计显示当前周期的平均超额 "
+                           "+7.20%、随机换一个周期 +6.64%（仅差 0.56pp），而各周期最优分布几乎均匀。"
+                           "网格层面的实测结论是「60 日档是弱档」（该档平均超额仅 +0.6%，80/100 档 +11.2%/+9.9%），"
+                           "去掉 60 档（改 [80,100]）年化持平而回撤收窄 1.1pp；加长档（120/150）与缩短档（40）都明显更差。"),
+            "expected_impact": (f"影响 {len(err)}/{len(done)} 条结论的窗口选择；"
+                                f"对照组（判定为「对」的结论）有 38.8% 也满足旧的宽松判据，"
+                                f"因此旧口径的 56% 主要反映「未来有波动」而非窗口选错"),
         })
 
     # 5) 入手 vs 埋伏
