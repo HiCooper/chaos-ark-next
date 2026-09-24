@@ -227,9 +227,10 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 n={`持仓 ${yuan(acct.mv)} ÷ 账户 ${yuan(acct.value)} · ${acct.positions.length}/${sim?.max_holdings} 笔`} />
             </div>
 
-            {/* ============ ② 下一个交易日操作 ============ */}
-            <div className="colhead" style={{ margin: '12px 0 6px' }}>
-              <h2 className="op-title" style={{ fontSize: 16 }}>下一个交易日操作</h2>
+            {/* ============ ② 下一个交易日操作（整块强调） ============ */}
+            <div className="opblock">
+            <div className="colhead" style={{ margin: '0 0 8px' }}>
+              <span className="op-tag">下一个交易日操作</span>
               <span className="n">开盘按下面的金额买入（今日结论）；到期持仓收盘卖出</span>
             </div>
 
@@ -394,6 +395,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                 </tbody>
               </table>
             )}
+            </div>
 
             {/* ============ ③ 当前持仓 ============ */}
             <div className="colhead" style={{ marginBottom: 6 }}>

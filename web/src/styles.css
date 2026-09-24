@@ -664,5 +664,17 @@ td.buyamt { font-weight: 700; font-size: 13px; }
 }
 .warnbar code { background: rgba(0,0,0,.05); padding: 0 3px; border-radius: 3px; }
 
-/* 「我的持仓」下一个交易日操作标题：红色加粗 */
-.op-title { color: var(--up, #c62828); font-weight: 700; }
+/* 「我的持仓」下一个交易日操作：浅红标签 + 整块浅红底强调 */
+.opblock {
+  margin: 2px 0 14px; padding: 12px 14px 14px;
+  background: linear-gradient(180deg, #fffafa 0%, #fff5f5 100%);
+  border: 1px solid #f3d7d7; border-radius: 10px;
+  box-shadow: inset 3px 0 0 0 var(--up, #c62828);
+}
+.op-tag {
+  display: inline-block; padding: 3px 12px; border-radius: 999px;
+  background: #fdeaea; border: 1px solid #f4c9c9;
+  color: var(--up, #c62828); font-size: 15px; font-weight: 700; letter-spacing: .3px;
+}
+.opblock .opbar { background: rgba(255, 255, 255, .72); border-color: #f0d2d2; }
+.opblock .colhead { border-bottom: none; }
