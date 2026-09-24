@@ -2,41 +2,92 @@ import React, { useState } from 'react'
 import { Card, Chip, pct } from './ui'
 import { Bars } from './ui'
 
-const STEPS = [
-  { t: '数据快照', d: '抓取 31 个申万一级行业 + 60 个细分赛道（共 95 个标的）与 5 个宽基指数的日线，回溯至 2013 年（3332 个交易日）。原始响应落盘缓存，重跑不重新联网即可复现。' },
-  { t: '特征库', d: '把 OHLCV 展成 95×3332 的特征张量：多周期收益、均线偏离、波动、回撤、量能、相对行业等权的超额。列式 npz 存储。' },
-  { t: '环境识别', d: '5 个分项（宽度 / 趋势 / 动能 / 低波 / 流动性）合成环境热度分，3 日平滑 + 连续 2 日确认才切换档位，避免日频抖动；极端回撤或波动自动降级。' },
-  { t: '六维打分', d: '长期主线、回调空间、抛压衰竭、触底确认、风险控制、环境适配。方向由 Rank IC 实证确定，不是直觉。' },
-  { t: '共振分类', d: '入手（主线成立 + 触底确认）／埋伏（主线回调 + 抛压衰竭）／观察／回避。回避项明确列出原因。' },
-  { t: '周期估计', d: '用该行业历史上「状态最相似的 K 个交易日」统计各窗口的真实胜率与超额，按风险调整期望择优；样本不足时标记 low_confidence，不允许臆测。' },
-  { t: '结论生成', d: '每条结论带触发理由链、失效条件、预计到期日，以及能真正买到的 ETF 标的及代码（细分赛道无对应 ETF 时，回退到所属一级行业的 ETF 并标注）。' },
-  { t: '交易结算', d: '行业指数只用于判断方向（不可交易），收益一律用真实 ETF 结算：信号日 T+1 开盘买入、持有建议周期后收盘卖出，扣双边佣金万二 + 滑点万五。ETF 上市前的日期标记为不可交易，绝不用指数回填收益。' },
-  { t: '复盘引擎', d: '对每一条历史结论做结果判定、归因、反事实统计，输出「做错了什么 / 为什么 / 如何改」，并回写为改进建议。改进必须像 A/B/C 三种执行口径那样跑出来对比，跑输就如实记录失败。' },
-]
+const stepsFor = (u: any) => {
+  const codes = u?.codes ?? '—'
+  const days = u?.days ?? '—'
+  const first = u?.first ?? '—'
+  return [
+    {
+      t: '数据快照',
+      d: `抓取申万一级 ${u?.l1 ?? '—'} 个行业 + 细分赛道佐证，加基准指数，共 ${codes} 个标的的日线，`
+        + `回溯至 ${first}（${days} 个交易日）。原始响应落盘缓存，重跑不重新联网即可复现。`,
+    },
+    {
+      t: '特征库',
+      d: `把 OHLCV 展成 ${codes} × ${days} 的特征张量：多周期收益、均线偏离、波动、回撤、量能、`
+        + '相对行业等权的超额。列式 npz 存储。',
+    },
+    { t: '环境识别', d: '5 个分项（宽度 / 趋势 / 动能 / 低波 / 流动性）合成环境热度分，3 日平滑 + 连续 2 日确认才切换档位，避免日频抖动；极端回撤或波动自动降级。' },
+    { t: '六维打分', d: '长期主线、回调空间、抛压衰竭、触底确认、风险控制、环境适配。方向由 Rank IC 实证确定，不是直觉。' },
+    { t: '共振分类', d: '入手（主线成立 + 触底确认）／埋伏（主线回调 + 抛压衰竭）／观察／回避。回避项明确列出原因。' },
+    { t: '周期估计', d: '用该行业历史上「状态最相似的 K 个交易日」统计各窗口的真实胜率与超额，按风险调整期望择优；样本不足时标记 low_confidence，不允许臆测。' },
+    { t: '结论生成', d: '每条结论带触发理由链、失效条件、预计到期日，以及能真正买到的 ETF 标的及代码（细分赛道无对应 ETF 时，回退到所属一级行业的 ETF 并标注）。' },
+    { t: '交易结算', d: '行业指数只用于判断方向（不可交易），收益一律用真实 ETF 结算：信号日 T+1 开盘买入、持有建议周期后收盘卖出，扣双边佣金万二 + 滑点万五。ETF 上市前的日期标记为不可交易，绝不用指数回填收益。' },
+    { t: '复盘引擎', d: '对每一条历史结论做结果判定、归因、反事实统计，输出「做错了什么 / 为什么 / 如何改」，并回写为改进建议。改进必须像 A/B/C 三种执行口径那样跑出来对比，跑输就如实记录失败。' },
+  ]
+}
+
+/** 参数表：每个旋钮是什么、当前值、作用在哪一层。与「规则」分开，互不混淆。 */
+function ParamsCard({ params }: { params: any[] }) {
+  const mods: any[] = params || []
+  const n = mods.reduce((a, m) => a + (m.items?.length || 0), 0)
+  return (
+    <Card
+      title="当前生效参数（什么参数、什么含义）"
+      extra={<Chip tone="accent">{n} 个参数 · {mods.length} 个模块</Chip>}
+    >
+      <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 10 }}>
+        每个旋钮的<b>当前值 / 它是什么 / 作用在哪一层</b>。数值全部实时取自
+        <code> engine/config.py</code>（个别常量在 classify / regime / horizon 内，已在来源里标注），
+        改配置后重跑管线即同步——不存在前端硬编码。「已停用」表示该旋钮仍在配置里但不参与计算。
+      </div>
+      {mods.map((m, i) => (
+        <div key={i} style={{ marginBottom: 16 }}>
+          <div className="ruleIntro" style={{ marginBottom: 6 }}>
+            <b>{m.module}</b>　<span className="muted">{m.intro}</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: '26%' }}>参数</th>
+                <th style={{ width: '17%', textAlign: 'right' }}>当前值</th>
+                <th>含义 / 影响</th>
+                <th style={{ width: '9%' }}>作用层</th>
+              </tr>
+            </thead>
+            <tbody>
+              {m.items.map((it: any, j: number) => (
+                <tr key={j}>
+                  <td><code>{it.key}</code></td>
+                  <td className="num" style={{ textAlign: 'right', fontWeight: 600 }}>{it.display}</td>
+                  <td className="small" style={{ color: 'var(--ink-2)' }}>{it.meaning}</td>
+                  <td><Chip>{it.scope}</Chip></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </Card>
+  )
+}
 
 function RulesPanel({ rules }: { rules: any }) {
   const groups: any[] = rules.groups || []
   const [gk, setGk] = useState<string>(groups[0]?.k || '')
   const cur = groups.find((g) => g.k === gk) || groups[0]
-  const live = rules.live || {}
   if (!cur) return null
 
   return (
     <>
       <Card
-        title="当前生效的交易规则与参数"
+        title="当前生效的交易规则"
         extra={<Chip tone="accent">{(rules.engine_version || '') + ' · 配置指纹 ' + String(rules.config_hash || '').slice(0, 8)}</Chip>}
       >
         <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 10 }}>
-          以下数值全部由 <code>engine/config.py</code> 直接导出，与引擎实跑用的是同一份来源——
-          改配置后重跑管线，本页自动同步，不存在前端硬编码导致的过期。
-        </div>
-
-        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-          {live.regime && <Chip>当前环境 {live.regime}</Chip>}
-          {live.n_picks != null && <Chip>今日研判 {live.n_picks} 条</Chip>}
-          {live.n_open != null && <Chip>在场持仓 {live.n_open} 笔</Chip>}
-          {live.demoted != null && <Chip tone="warn">累计前置过滤降级 {live.demoted} 条</Chip>}
+          规则回答「系统怎么决策」，与参数分开两处：参数表见下方「当前生效参数」。
+          两者都直接导出自 <code>engine/config.py</code>，与引擎实跑同一份来源——
+          改配置后重跑管线本页自动同步，不存在前端硬编码导致的过期。
         </div>
 
         <div className="ruleNav">
@@ -68,6 +119,8 @@ function RulesPanel({ rules }: { rules: any }) {
           ))}
         </div>
       </Card>
+
+      <ParamsCard params={rules.params || []} />
 
       <Card
         title="已试但未采纳的规则（边界记录）"
@@ -145,7 +198,7 @@ export default function Engine({ data, today }: { data: any; today: any }) {
       </Card>
 
       <Card title="工作流：每日结论背后的 9 步">
-        {STEPS.map((s, i) => (
+        {stepsFor(data.rules?.universe).map((s, i) => (
           <div className="step" key={i}>
             <div className="n">{i + 1}</div>
             <div className="b">

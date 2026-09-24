@@ -541,7 +541,9 @@ def main():
     (rep.get("settlement") or {}).pop("buy_plans", None)   # 计划块已被 sim.json 取代
     # 生效规则快照：数值全部从 config.py 直读，供「引擎」页展示，
     # 避免前端硬编码导致配置改了页面不跟着变。
-    rep["rules"] = RULES.build_rules(settlement=rep.get("settlement"), today=today)
+    rep["rules"] = RULES.build_rules(universe={
+        "codes": len(fs.codes), "l1": len(fs.l1_codes()), "days": len(fs.dates),
+        "first": fs.dates[0], "last": fs.dates[-1]})
     rep["rules"]["engine_version"] = ENGINE_VERSION
     rep["rules"]["config_hash"] = config_hash()
     json.dump(rep, open(f"{C.OUT_DIR}/review.json", "w"), ensure_ascii=False)

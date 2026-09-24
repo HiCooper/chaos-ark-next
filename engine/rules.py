@@ -56,12 +56,176 @@ def _group(key: str, title: str, intro: str, items: List[dict],
     return {"k": key, "title": title, "intro": intro, "items": items, "badge": badge}
 
 
+# --------------------------------------------------------------------- 参数模块
+_DIM_CN = {
+    "mainline": "长期主线", "pullback": "回调空间", "exhaust": "抛压衰竭",
+    "rebound": "触底确认", "risk": "风险控制", "regime_fit": "环境适配",
+}
+
+
+def _param(key: str, display: str, meaning: str, scope: str, src: str = "") -> dict:
+    """一条参数：key=参数名（config 里的路径），display=当前值，meaning=它是什么/影响什么。"""
+    return {"key": key, "display": display, "meaning": meaning, "scope": scope,
+            "src": src or f"config.{key}"}
+
+
+def build_params() -> List[dict]:
+    """当前生效参数表（按模块分组）——只列参数本身：是什么、当前值、含义、作用在哪一层。
+
+    与 build_rules() 的分工：规则说「系统怎么决策」，这里说「每个旋钮拧在哪、拧多大」。
+    全部数值实时取自 config / regime / horizon，改配置即同步，不存在前端硬编码。
+    """
+    q, flt, rc, po = C.CLASSIFY, C.CONCLUSION_FILTER, C.RISK_CONTROL, C.PORTFOLIO
+    hz, cost, rv = C.HORIZON_CANDIDATES, C.TRADING_COST, C.REVIEW
+    th = RG.REGIME_THRESHOLDS
+    cap = q["max_daily_picks"] * 4
+    ec = rc.get("exposure_cap") or {}
+
+    signal = [
+        _param("CLASSIFY.buy_now_min", f"{_num(q['buy_now_min'])} 分",
+               "「入手」的最低综合分。还要同时满足主线 ≥ 58、触底 ≥ 55、风险 ≥ 35（分项阈值在 engine/classify.py）。",
+               "信号层", "config.CLASSIFY.buy_now_min"),
+        _param("CLASSIFY.ambush_min", f"{_num(q['ambush_min'])} 分",
+               "「埋伏」的最低综合分。还要同时满足主线 ≥ 52、回调 ≥ 52、衰竭 ≥ 50（分项阈值在 engine/classify.py）。",
+               "信号层", "config.CLASSIFY.ambush_min"),
+        _param("CLASSIFY.max_daily_picks", f"{q['max_daily_picks']} 个",
+               "单日最多输出多少个方向（结论条数上限），防止信号密集日把资金摊薄。",
+               "信号层"),
+        _param("CLASSIFY.max_buy_now", f"{q['max_buy_now']} 个",
+               "其中「入手」最多几个；剩余名额由「埋伏」按综合分补足。",
+               "信号层"),
+        _param("CLASSIFY.mature_weight",
+               f"{_num(q['mature_weight'])}" + ("（不降权）" if q["mature_weight"] == 1.0 else ""),
+               "MATURE（成熟期）候选综合分的乘数。1.0 = 不降权；0.7 表示成熟期让位。"
+               "2026-09-24 经 lab_mature_oos 审计由 0.7 回退到 1.0（近端年化 −1.08% → +9.49%）。",
+               "信号层"),
+        _param("classify 硬回避阈值", "主线 < 30 · 高于 MA250 > 45% · 风险 < 22",
+               "三条硬回避线（长期下降通道 / 长期超涨 / 波动量能极端），"
+               "且该条综合分 ≥ 50 时提前返回「回避」。常量在 engine/classify.py。",
+               "信号层", "engine/classify.py"),
+        _param("CONCLUSION_FILTER.rs120_min", f"≥ {_pct(flt['rs120_min'], 2)}",
+               "120 日相对行业等权超额不为负。结论自带的失效条件就是「超额转负即作废」，"
+               "事前仍建仓等于自相矛盾（这类结论实测胜率 4.8%、平均超额 −7.91%）。",
+               "信号层"),
+        _param("CONCLUSION_FILTER.pos60_max", f"≤ {_num(flt['pos60_max'], 2)}",
+               "近 60 日区间位置分位上限，超过就是买在区间顶部 5%（追高）。"
+               "剔除后年化 +2.9pp、回撤 −3.2pp；0.88~0.98 为宽平台。",
+               "信号层"),
+    ]
+
+    score = [
+        _param("BASE_WEIGHTS", " · ".join(
+                   f"{_DIM_CN.get(k, k)} {v:.2f}" for k, v in C.BASE_WEIGHTS.items()),
+               "六维基准权重：长期主线 / 回调空间 / 抛压衰竭 / 触底确认 / 风险控制 / 环境适配。"
+               "方向由 Rank IC 实证确定（120 日动量 IC≈+0.55@40 日，60 日内动量全为负）。",
+               "信号层"),
+        _param("REGIME_WEIGHT_ADJ", "4 档环境各自乘权重",
+               "环境档位对六维权重的乘数：ATTACK 强化主线与触底；PANIC 提高风险与环境适配（risk ×1.50）。",
+               "信号层"),
+        _param("REGIME_THRESHOLDS",
+               f"进攻 ≥{_num(th['attack'])} · 中性 ≥{_num(th['neutral'])} · 防守 ≥{_num(th['defend'])}",
+               "环境热度分（0–100，5 分项合成）映射到 4 档的阈值。",
+               "信号层", "regime.REGIME_THRESHOLDS"),
+        _param("EMA_ALPHA / REGIME_CONFIRM_DAYS",
+               f"α={_num(RG.EMA_ALPHA)} + 连续 {RG.REGIME_CONFIRM_DAYS} 日确认",
+               "环境热度分平滑与确认天数，避免日频抖动导致档位反复切换。",
+               "信号层", "regime.EMA_ALPHA / REGIME_CONFIRM_DAYS"),
+        _param("REGIME_RULES.bench_dd_panic", f"{_pct(C.REGIME_RULES['bench_dd_panic'], 2, True)}",
+               "基准 60 日回撤低于该阈值 → 强制判为恐慌；波动率分位 > "
+               f"{_num(C.REGIME_RULES['vol_pct_panic'])} 时从进攻/中性降级为防守。",
+               "信号层"),
+        _param("HORIZON_CANDIDATES", " / ".join(str(x) for x in hz) + " 个交易日",
+               "候选持有周期网格（10 日窗口平均超额仅 +0.27%、胜率 33%，已被排除在候选外）。",
+               "信号层"),
+        _param("horizon.K_NEIGHBORS / MIN_SAMPLES / DEFAULT_HORIZON",
+               f"{HZ.K_NEIGHBORS} / {HZ.MIN_SAMPLES} / {HZ.DEFAULT_HORIZON}",
+               "周期择优用的相似日样本数、最小有效样本、样本不足时的默认周期"
+               "（不足时标记 low_confidence，不允许臆测填补）。",
+               "信号层", "engine/horizon.py"),
+    ]
+
+    settle = [
+        _param("PORTFOLIO.target_positions", f"K = {po['target_positions']}",
+               "目标持仓笔数：建仓预算 = 账户总值 × 建仓闸门 ÷ K。可执行账户里唯一有效的风险旋钮"
+               "（K 越小越集中、均值越高、尾部越深；K=8 年化 16.2%/回撤 −41.8%，K=32 9.9%/−28.0%）。",
+               "结算层"),
+        _param("PORTFOLIO.max_new_per_day", f"{_num(po['max_new_per_day'])} 个",
+               "每日最多新建仓位数。限制建仓节奏；实测从无限制降到 2 笔，年化 +0.9pp、回撤 −0.3pp。",
+               "结算层"),
+        _param("PORTFOLIO.score_tilt", f"{_num(po['score_tilt'])}",
+               "建仓预算的高分倾斜指数：预算 ∝ (综合分/50)^tilt × 1/σ。"
+               "只影响建仓时各笔买多少，不改变买什么、何时买卖。",
+               "结算层"),
+        _param("max_holdings（派生）", f"{cap} 个仓位",
+               "同时在场持仓数量上限 = CLASSIFY.max_daily_picks × 4。"
+               "满仓后新信号不建仓，只能等持仓到期腾位（实测常年在 30~32 笔）。",
+               "结算层", "= CLASSIFY.max_daily_picks × 4"),
+        _param("RISK_CONTROL.risk_parity", "启用" if rc["risk_parity"] else "关闭",
+               "建仓预算按 1/σ 倾斜（低波动标的建仓时多分预算）。"
+               "注意：权重建仓后随价格漂移，「风险贡献相等」只在建仓那一刻成立。",
+               "结算层"),
+        _param("RISK_CONTROL.rp_window", f"{rc['rp_window']} 个交易日",
+               "σ 的已实现波动估计窗口（用于 1/σ 权重与波动估计）。",
+               "结算层"),
+        _param("RISK_CONTROL.cash_yield", "不计息" if not rc["cash_yield"] else f"{_pct(rc['cash_yield'], 2)} / 年",
+               "未投入现金的年化收益。2026-09-23 起按用户口径取 0（不把货基/保证金理财当默认行为）。",
+               "结算层"),
+        _param("RISK_CONTROL.vol_target", "已停用" if rc["vol_target"] is None else _pct(rc["vol_target"], 2),
+               "组合目标年化波动（原：按比例缩减建仓预算）。可执行账户里它压不了存量暴露，"
+               "全窗口年化 −1.6pp 而回撤反升 → ark-1.8.1 停用。",
+               "结算层"),
+        _param("RISK_CONTROL.vol_floor", f"{_pct(rc['vol_floor'], 2)}（随 vol_target 停用）",
+               "暴露下限，仅作历史记录：波动目标停用后不再参与计算。",
+               "结算层"),
+        _param("RISK_CONTROL.exposure_cap",
+               "已停用" if not ec.get("enabled") else "启用",
+               "F5 暴露上限（max(动量cap, 环境cap)：宽幅熊市/恐慌期压新仓预算）。"
+               f"参数：动量窗口 {ec.get('momentum_window')} 日、动量 floor {_num(ec.get('momentum_floor'))}、"
+               "环境档 " + " / ".join(f"{k} {_num(v)}" for k, v in (ec.get("env_caps") or {}).items()) +
+               "。依赖每日再平衡，可执行口径下为负贡献 → 停用。",
+               "结算层"),
+    ]
+
+    review = [
+        _param("TRADING_COST.commission / slippage",
+               f"万{_num(cost['commission']*10000)} / 万{_num(cost['slippage']*10000)}（单边）",
+               "佣金与滑点，按成交金额计；ETF 免印花税。单笔往返合计 "
+               f"{C.ROUND_TRIP_COST*100:.2f}%（买卖各扣一次），所有收益数字均已扣除。",
+               "评估层"),
+        _param("ETF_QFQ / QFQ_BREAK_THRESH",
+               ("启用" if C.ETF_QFQ else "未启用") + f" · 阈值 {_pct(C.QFQ_BREAK_THRESH, 2, True)}",
+               "ETF 份额折算复权：拆分/合并会让单价按整数倍跳变而持有人价值不变，"
+               "结算取价时检测这类断点（偏离参照收益超阈值）并按参照还原，不记为盈亏；L0 原始数据不动。",
+               "评估层", "config.ETF_QFQ / QFQ_BREAK_THRESH"),
+        _param("REVIEW.outperf_win / outperf_loss",
+               f"≥ {_pct(rv['outperf_win'], 2, True)} / ≤ {_pct(rv['outperf_loss'], 2, True)}",
+               "结论「对 / 错」的判定线：相对沪深300 超额超过前者记为对、低于后者记为错，之间为中性。",
+               "评估层"),
+        _param("REVIEW.lookahead_grids", " / ".join(str(x) for x in rv["lookahead_grids"]) + " 个交易日",
+               "复盘时对所有窗口都做前瞻统计，避免只挑对自己有利的单一周期。",
+               "评估层"),
+        _param("BACKTEST_START / WARMUP", f"{C.BACKTEST_START} 起 · 预热 {C.WARMUP} 日",
+               "回测起点与指标预热长度。跨越 2018 / 2021–22 / 2024 三轮熊市；"
+               "2018 前行业 ETF 覆盖度不足，故不纳入结算统计。",
+               "评估层"),
+    ]
+
+    return [
+        {"module": "结论门槛（信号层）", "intro": "什么条件下才给结论、哪些结论不给。", "items": signal},
+        {"module": "打分与环境（信号层）", "intro": "六维分与环境档位的权重、阈值、平滑。", "items": score},
+        {"module": "资金与风控（结算层）", "intro": "钱怎么分、能拿多少仓、风控旋钮的开关状态。", "items": settle},
+        {"module": "成本与评估（评估层）", "intro": "成本假设、复权口径、对错判定与回测区间。", "items": review},
+    ]
+
+
 # --------------------------------------------------------------------- 主逻辑
-def build_rules(settlement: Optional[dict] = None,
-                today: Optional[dict] = None) -> dict:
-    """组装生效规则快照。settlement / today 仅用于填「本次运行实况」。"""
-    st = settlement or {}
-    cf = st.get("conclusion_filter") or {}
+def build_rules(universe: Optional[dict] = None) -> dict:
+    """组装生效规则快照（只含规则与参数，不含任何当日研判实况）。
+
+    研判实况（当前环境 / 今日结论条数 / 在场持仓 / 累计降级数）属于运行状态，
+    由 today.json / review.json 各自的字段表达，不混进这份规则快照——
+    规则回答「系统怎么决策」，状态回答「今天跑成什么样」，两者不该出现在同一张卡里。
+    """
     q = C.CLASSIFY
     flt = C.CONCLUSION_FILTER
     rc = C.RISK_CONTROL
@@ -99,7 +263,6 @@ def build_rules(settlement: Optional[dict] = None,
     ]
 
     # ---------------------------------------------------- 2 结论前置过滤
-    n_dem = cf.get("n_demoted")
     filt_items = [
         _item("120 日相对行业等权超额", f"≥ {_pct(flt['rs120_min'], 2)}（不为负）",
               "config.CONCLUSION_FILTER.rs120_min",
@@ -113,10 +276,6 @@ def build_rules(settlement: Optional[dict] = None,
               "engine/classify.py · 结论前置过滤",
               "不删除、不择时——被过滤的结论仍可逐条复核，只在建仓环节不采纳。"),
     ]
-    if n_dem is not None:
-        filt_items.append(
-            _item("本次运行实际降级", f"{n_dem} 条", "review.settlement.conclusion_filter",
-                  "全区间累计被前置过滤降级的结论数。", kind="live"))
 
     # ---------------------------------------------------- 3 建仓执行
     exec_items = [
@@ -144,7 +303,7 @@ def build_rules(settlement: Optional[dict] = None,
     risk_items = [
         _item("建仓预算倾斜", f"∝ (综合分 / 50) ^ {_num(po['score_tilt'])} × 1/σ",
               "config.PORTFOLIO.score_tilt",
-              "只作用于**建仓时的预算分配**（低波动、高分标的买得多一点）；"
+              "只作用于建仓时的预算分配（低波动、高分标的买得多一点）；"
               "建仓后权重随价格漂移，不再调整——本系统没有每日再平衡。"),
         _item("风险预算", "建仓预算按 1/σ 倾斜（风险平价）" if rc["risk_parity"] else "等额预算",
               "config.RISK_CONTROL.risk_parity",
@@ -156,7 +315,7 @@ def build_rules(settlement: Optional[dict] = None,
         _item("组合目标年化波动",
               _pct(rc["vol_target"], 2) if rc["vol_target"] is not None else "已停用",
               "config.RISK_CONTROL.vol_target",
-              "**已停用（ark-1.8.1）**。可执行账户里它只能缩小新仓预算、压不了存量暴露，"
+              "已停用（ark-1.8.1）。可执行账户里它只能缩小新仓预算、压不了存量暴露，"
               "实测全窗口年化 -1.6pp 而回撤反升；滚动一年均值 -2.3pp、只换来尾部 2.2pp。"),
         _item("暴露下限", f"{_pct(rc['vol_floor'], 2)}（随波动目标停用而不生效）",
               "config.RISK_CONTROL.vol_floor",
@@ -164,7 +323,7 @@ def build_rules(settlement: Optional[dict] = None,
         _item("暴露上限（F5）",
               "max(动量cap, 环境cap)" if rc.get("exposure_cap", {}).get("enabled") else "已停用",
               "config.RISK_CONTROL.exposure_cap",
-              "**已停用（ark-1.8.1）**。原设计是「下跌年份压暴露」，但那依赖每日再平衡；"
+              "已停用（ark-1.8.1）。原设计是「下跌年份压暴露」，但那依赖每日再平衡；"
               "在可执行账户里它压不了存量，只剩阴跌期少买，全窗口变成 11.75%/-36.45%（更差）。"
               "要压尾部请调低目标持仓笔数 K（K=24 最差一年 -21.8%）。"),
         _item("未投入部分收益", ("不计息" if not rc.get("cash_yield")
@@ -321,12 +480,9 @@ def build_rules(settlement: Optional[dict] = None,
         "groups": groups,
         "rejected": rejected,
         "floor_grid": C.RISK_CONTROL_FLOORS,
-        "live": {
-            "demoted": n_dem,
-            "regime": (today or {}).get("regime"),
-            "n_picks": len((today or {}).get("picks") or []),
-            "n_open": ((today or {}).get("action_today") or {}).get("n_open"),
-        },
+        "params": build_params(),
+        # 宇宙规模（标的数 / 交易日数 / 起止）：给引擎页的工作流说明用同一份来源
+        "universe": universe or {},
     }
 
 
