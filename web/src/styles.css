@@ -563,19 +563,34 @@ td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3);
 .hp-score b { font-size: 16px; }
 
 /* ---------- 实验 tab ---------- */
-.lab-card { padding: 0; overflow: hidden; }
-.lab-head { padding: 14px 18px; cursor: pointer; user-select: none; }
+/* ---------- 实验页：卡片头对齐、徽章、折叠箭头、差异提示 ---------- */
+.lab-card { padding: 0; overflow: hidden; margin-bottom: 12px; transition: box-shadow .15s, border-color .15s; }
+.lab-card.on { border-color: #cfd8ea; box-shadow: 0 2px 10px rgba(31,58,138,.06); }
+.lab-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px 11px; cursor: pointer; user-select: none; }
 .lab-head:hover { background: var(--line-2); }
-.lab-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.lab-meta { color: var(--ink-3); font-size: 12.5px; margin-left: auto; }
-.lab-vs { margin-top: 3px; padding-left: 2px; }
+.lab-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 auto; }
+.lab-title b { font-size: 14px; line-height: 1.45; }
+.lab-meta { color: var(--ink-3); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.chev { flex: 0 0 auto; color: var(--ink-3); font-size: 12px; width: 14px; text-align: center; }
+.lab-sum { padding: 0 16px 11px; }
+.lab-vs { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+.lab-vs-k { display: inline-block; min-width: 30px; margin-right: 6px; color: var(--ink-3); font-size: 11.5px; }
+.lab-caveat {
+  margin-top: 6px; display: inline-block; font-size: 11.5px; line-height: 1.55;
+  color: #7a4b00; background: #fff8e6; border: 1px solid #f0d79a; border-radius: 6px; padding: 3px 8px;
+}
+.lab-count { margin-top: 8px; }
 .lab-st {
+  flex: 0 0 auto; min-width: 54px; text-align: center; white-space: nowrap;
+
   flex: none; font-size: 12px; font-weight: 600; padding: 1px 9px;
   border-radius: 99px; border: 1px solid transparent;
 }
 .lab-st-adopted { color: #14684b; background: #e7f3ee; border-color: #cfe6dc; }
 .lab-st-rejected { color: #8a3237; background: #f8ecEC; border-color: #ecd2d4; }
 .lab-st-pending { color: #8a6415; background: #faf3e2; border-color: #ecdfba; }
+.lab-st-partial { color: #8a6415; background: #fdf6e3; border-color: #efdfb4; }
+.lab-st-record { color: var(--ink-2); background: #f4f6f8; border-color: var(--line); }
 .lab-body { padding: 2px 18px 16px; border-top: 1px solid var(--line-2); }
 .lab-sec { margin-top: 12px; }
 .lab-sec p { margin: 4px 0 0; color: var(--ink-2); }
@@ -589,6 +604,9 @@ td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3);
   padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line-2);
 }
 .lab-tbl td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+.lab-tbl th.lab-num, .lab-tbl td.lab-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lab-tbl th.lab-num { padding-right: 0; }
+.lab-tbl thead th { border-bottom: 1px solid var(--line); }
 .lab-tbl tr:last-child td { border-bottom: none; }
 .lab-k { font-weight: 600; white-space: nowrap; padding-right: 14px; }
 .lab-goals { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
