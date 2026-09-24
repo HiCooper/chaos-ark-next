@@ -61,6 +61,8 @@ L4  cache/               实验台一次性产物                  可随时删�
 
 `etf/<sid>.json` + `etf/_index.json`（标的走势核验弹窗）**不在**这条重建链上：
 它由 `build_etf_webdata.py` 从 `cache/etf_panel.json` 单独导出，因此必须显式重建。
+导出时必须与 `pipeline.load_etf_book()` **同参照**做份额折算复权（申万行业指数），
+否则弹窗红线不是结算取价、两处市值会差几个百分点；`ark.py verify` 会逐位比对拦住。
 漏跑的症状很隐蔽——账户已经盯市到最新交易日，点开 ETF 却显示涨跌停在两天前
 （2026-09-24 实际发生过一次）。现在 `ark.py daily` / `ark.py init` 都会跑它，
 `_index.json` 里记了日期轴末端 `last`，`ark.py status` / `verify` 把它当作一层水位

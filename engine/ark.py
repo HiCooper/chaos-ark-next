@@ -428,6 +428,19 @@ def cmd_verify() -> int:
     print((r.stdout or "").rstrip() or (r.stderr or "").rstrip()[:500])
     if r.returncode != 0:
         return 1
+
+    # 弹窗红线必须就是结算取价：复权参照不同（行业指数 vs 全池中位数）会算出不同的
+    # 复权因子，表现为「页面上这只 ETF 浮动 +3,399、弹窗里却是 +5,586」。
+    print("[verify] 弹窗走势与结算取价一致性 ...")
+    bad = _etf_webdata_vs_settlement()
+    if bad:
+        print(f"  ✗ {len(bad)} 处不一致（弹窗走势 ≠ 结算取价，复权口径可能不同源）")
+        for b in bad[:8]:
+            print("      " + b)
+        print("     修：python3 engine/build_etf_webdata.py（必须与 pipeline.load_etf_book 同参照）")
+        return 1
+    print("  ✓ 弹窗复权价 = 结算取价（逐位相同）")
+
     lv = water_level()
     fp = lv.get("L2_features_fp") or {}
 
@@ -476,6 +489,43 @@ def cmd_verify() -> int:
         if not ok:
             return 1
     return 0
+
+
+def _etf_webdata_vs_settlement() -> list:
+    """弹窗走势数据（etf/<sid>.json 的 adj）必须与结算层取价（sim.json 的 px.c）逐位相同。
+
+    两者都源自 cache/etf_panel.json 的份额折算复权，但**参照不同就会算出不同的因子**：
+    pipeline.load_etf_book() 用申万行业指数当参照，build_etf_webdata.py 若漏传参照
+    会退化成全池中位数——复权价能差几个百分点，于是同一个持仓在页面上和弹窗里
+    显示成两个市值。这里抽查每只结算标的最近 3 个有价日，逐位比对。
+    """
+    sim = _jload(os.path.join(OUT_DIR, "sim.json"))
+    if not sim:
+        return []
+    sdates = sim.get("dates") or []
+    bad = []
+    for sid, arr in (sim.get("px", {}).get("c") or {}).items():
+        f = _jload(os.path.join(OUT_DIR, "etf", f"{sid}.json"))
+        if not f:
+            bad.append(f"{sid} 走势文件缺失")
+            continue
+        eidx = {d: i for i, d in enumerate(f.get("dates") or [])}
+        checked = 0
+        for i in range(len(arr) - 1, -1, -1):
+            v = arr[i] if i < len(arr) else None
+            if v is None or i >= len(sdates):
+                continue
+            j = eidx.get(sdates[i])
+            if j is None:
+                continue
+            w = (f.get("adj") or [])[j] if j < len(f.get("adj") or []) else None
+            if w is None or abs(w - v) > max(1e-6, abs(v) * 1e-6):
+                bad.append(f"{sid} {sdates[i]}：结算 {v} vs 弹窗走势 {w}")
+                break
+            checked += 1
+            if checked >= 3:
+                break
+    return bad
 
 
 def cmd_repair(date: str, yes: bool) -> int:

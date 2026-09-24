@@ -27,6 +27,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
+import datasource as DS  # noqa: E402
 import qfq  # noqa: E402
 
 OUT_DIR = os.path.join(C.ROOT, "web", "public", "data", "etf")
@@ -34,7 +35,13 @@ OUT_DIR = os.path.join(C.ROOT, "web", "public", "data", "etf")
 
 def main() -> None:
     ep = json.load(open(f"{C.CACHE_DIR}/etf_panel.json"))
-    panel, rep = qfq.apply_qfq(ep, None, verbose=False)
+    # 复权必须与**结算层**逐位同源：pipeline.load_etf_book() 用申万行业指数当参照
+    # （ref_src=index）判定折算断点，参照不同则因子不同、复权价也不同。
+    # 这里曾经传 None（退化成全池中位数参照），导致弹窗红线和结算取价对不上——
+    # 实测同一只 159516 在 2026-09-23：中位数复权 3.0142 vs 结算 2.891，
+    # 「本账户在途持仓」的市值因此比页面上多算 4% 左右。
+    sw_panel = DS.load_panel() if os.path.exists(f"{C.CACHE_DIR}/panel.json") else None
+    panel, rep = qfq.apply_qfq(ep, sw_panel, verbose=False, thresh=C.QFQ_BREAK_THRESH)
     dates = panel["dates"]
     # 弹窗走势只展示复盘窗口（BACKTEST_START 起）：面板日期轴从申万指数基期
     # 1999-12-30 开始，不截断的话图表会显得「从 1999 年开始」且与复盘口径不一致。
@@ -46,9 +53,10 @@ def main() -> None:
     listing = panel.get("listing") or {}
     sw_to_etf = panel.get("sw_to_etf") or {}
 
-    # 复权报告若已有落盘文件则以落盘为准（与生产 review 同源）；否则现算
-    rep_path = f"{C.CACHE_DIR}/qfq_report.json"
-    breaks_all = json.load(open(rep_path)) if os.path.exists(rep_path) else rep
+    # 断点清单直接用上面这次复权返回的报告：**显示的因子必须就是乘进 adj 的那个因子**。
+    # （曾经优先读 cache/qfq_report.json，那是 qfq.py 单独运行时的落盘产物，
+    #   与本次 adj 的算法参数未必一致 —— 图上标的「复权因子」和红线会互相矛盾。）
+    breaks_all = rep
 
     os.makedirs(OUT_DIR, exist_ok=True)
     n_files = 0
