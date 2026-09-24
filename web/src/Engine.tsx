@@ -98,6 +98,52 @@ export default function Engine({ data, today }: { data: any; today: any }) {
   const rules = data.rules
   return (
     <>
+      <Card title="设计前提：为什么是两层——信号用行业指数，成交与收益用 ETF">
+        <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 10 }}>
+          一句话：<b>行业指数回答「该不该做、做什么方向」，真实 ETF 回答「能不能做、赚了多少」</b>。
+          两层各用各的最优数据，混用任何一层都会把系统推向不可执行或不可信。
+        </div>
+        <div className="grid g2" style={{ marginBottom: 10 }}>
+          <div className="layerbox">
+            <div className="layertag">判断层 · 申万行业指数（125 条 × 6468 个交易日，1999 年起）</div>
+            <ul className="reasons" style={{ margin: 0 }}>
+              <li>历史长、口径同质、无折溢价与流动性噪声——横截面比较（Rank IC）才有意义。</li>
+              <li>带 L1/L2/L3 层级，才能做「主线共振」判断：一级方向 + 细分赛道互相印证。</li>
+              <li>它<b>不可交易</b>：所以只用于方向，不参与任何收益计算。</li>
+            </ul>
+          </div>
+          <div className="layerbox">
+            <div className="layertag">结算层 · 真实可交易 ETF（123 只，前复权价 + 双边成本 0.14%）</div>
+            <ul className="reasons" style={{ margin: 0 }}>
+              <li>收益只能来自真的买得到、卖得掉的东西：T+1 开盘买入、持有到期收盘卖出。</li>
+              <li>ETF 上市之前该行业视为不可交易，<b>绝不用行业指数回填</b>（这也是早期样本偏少的真实原因）。</li>
+              <li>份额折算（拆分/合并）按前复权还原，不记为盈亏。</li>
+            </ul>
+          </div>
+        </div>
+        <ul className="reasons" style={{ marginTop: 0 }}>
+          <li>
+            <b>为什么不干脆用 ETF 做信号</b>：ETF 中位上市日 2020-12-29，2018-01-02 之前只有 36/123 只，
+            回测会被砍到 ~2022 之后并引入幸存者偏差；而且 ETF 没有行业层级，重建不了共振逻辑，
+            还带来折溢价、跟踪误差、场内流动性等噪声。
+          </li>
+          <li>
+            <b>为什么不能用指数算收益</b>：指数不可交易，用指数算出来的收益无法兑现——这是"看着能赚、实盘赚不到"的经典来源。
+          </li>
+          <li>
+            <b>由此得到的数据依赖方向（重要）</b>：<b>ETF 价格再新也生不出「该买什么」</b>——
+            新的 ETF 行情只能改写已有交易清单的收益，不能生成新的清单；反过来，<b>行业指数不出数 → 当天没有结论
+            → 复盘、买卖清单、影子账户全都推进不了</b>（缺的不是价格，是交易清单）。
+            所以数据源滞后必须在<b>数据层</b>解决，而不是在结算层"跳过一天"。
+          </li>
+        </ul>
+        <div className="note" style={{ marginTop: 10 }}>
+          落地方式：申万官方日线滞后时，用申万<b>实时行情</b>补最近 1~2 个交易日——收盘价取实时真值、
+          成交量/成交额按沪深300量比<b>估算</b>并逐行打 <code>est</code> 标记，官方出数后重跑
+          <code> ark.py daily</code> 自动用真值覆盖。详见 <code>docs/数据兜底-实时行情补尾部.md</code>。
+        </div>
+      </Card>
+
       <Card title="工作流：每日结论背后的 9 步">
         {STEPS.map((s, i) => (
           <div className="step" key={i}>
@@ -190,9 +236,10 @@ export default function Engine({ data, today }: { data: any; today: any }) {
           <li>统计口径为样本内回测；分年度与跨牛熊分段结果已在复盘页披露，请优先看跨市场阶段是否一致再决定是否采信。</li>
         </ul>
         <div className="note" style={{ marginTop: 10 }}>
-          复现方式：<code>python engine/pipeline.py --full</code> 重放全部 2600+ 交易日并刷新页面数据；
-          先跑 <code>python engine/build_etf_panel.py</code> 重建 ETF 映射；
-          <code>python engine/diag.py</code> 与 <code>diag3.py</code> 可重新验证因子方向。
+          复现方式：<code>python3 engine/ark.py daily --full</code>（取数 + 全量重放 + 同步 + 水位验收）；
+          只重跑重放层用 <code>python3 engine/pipeline.py --all</code>；
+          因子方向可复跑 <code>python3 engine/diag.py</code>；
+          账本可执行性对账用 <code>python3 engine/ark.py verify</code>。
         </div>
       </Card>
 

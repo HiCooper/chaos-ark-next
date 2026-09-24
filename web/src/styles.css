@@ -678,3 +678,8 @@ td.buyamt { font-weight: 700; font-size: 13px; }
 }
 .opblock .opbar { background: rgba(255, 255, 255, .72); border-color: #f0d2d2; }
 .opblock .colhead { border-bottom: none; }
+
+/* 引擎页：两层架构说明块 */
+.layerbox { background: var(--bg, #f7f8fa); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.layertag { font-weight: 700; font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; }
+.layerbox .reasons li { font-size: 12.5px; }
