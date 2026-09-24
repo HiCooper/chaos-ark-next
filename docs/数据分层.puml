@@ -1,0 +1,58 @@
+@startuml ARK数据分层
+' 混沌方舟 ARK · 数据分层
+' 线上渲染版：站点「引擎」页 →「数据分层」卡片（内容由 engine/rules.py build_layers() 导出，
+' 数字实时取自磁盘）。本文件是同一张图的文本源，便于嵌入文档 / 代码评审时直接渲染。
+' 文字手册：docs/DATA-LAYERS.md
+
+title 混沌方舟 ARK · 数据分层（箭头 = 数据流；重建方向相反）
+
+skinparam shadowing false
+skinparam defaultFontName "PingFang SC"
+skinparam defaultFontSize 13
+skinparam ArrowColor #8B94A3
+skinparam rectangle {
+  BackgroundColor #FFFFFF
+  BorderColor #E4E7EC
+  RoundCorner 10
+  Padding 10
+}
+skinparam note {
+  BackgroundColor #FBFCFD
+  BorderColor #E4E7EC
+  FontSize 12
+}
+
+rectangle "L0 原始层 ｜ data/raw/\n外部数据源的原样快照（地基）\n规则：write-once + merge-append，只增不改\n重建：datasource_sw.py --refresh · build_etf_panel.py --refresh" as L0
+rectangle "L1 派生面板 ｜ cache/panel.json · cache/etf_panel.json\n行业宇宙统一交易日轴 + 可交易 ETF 逐日选择\n规则：冻结点 —— 刷新面板 = 换结论基线\n重建：datasource_sw.py [--refresh] · build_etf_panel.py" as L1 #FBFCFE
+rectangle "L2 特征层 ｜ cache/features.npz · cache/regime.json\n标的×日期×字段 特征张量 + 环境热度序列\n规则：float64 落盘 · 窗口起点锚定（两条硬约定）\n重建：pipeline.py --refresh" as L2 #FBFCFE
+rectangle "L3 导出层 ｜ web/public/data/\n今日结论 / 逐日研判 / 复盘 / 结算事件与取价\n规则：可整层删除后从 L2 重放\n重建：pipeline.py --all [--tail N] → ark.py sync" as L3 #FBFCFE
+rectangle "展示层 ｜ web/public/view/\n标的走势核验弹窗（dates / raw / adj / breaks）\n规则：不自带算法 · 不在依赖链上 · 必须显式重建\n重建：build_etf_webdata.py（消费结算账簿）" as VIEW #F5EFFF
+
+L0 --> L1
+L1 --> L2
+L2 --> L3
+L1 ..> VIEW : 与结算层同一次 load_etf_book()
+
+note right of L3
+  核心约定
+  **同一份 config + 同一份 L1 面板 ⇒ 同一份结论**
+  逐字节可重放：任何一天的结论都能用当时的输入重算
+  L1 是冻结点；非 L0 层可整层删除后重建
+end note
+
+note right of VIEW
+  **不在依赖链上，也不是一层数据**
+  · 数据层推不动它 → 漏跑 = 账户已盯市到最新日、
+    弹窗标的涨跌却停在两天前
+  · 水位登记名 VIEW_etf_modal（展示层陈旧守卫）
+  · ark.py verify 逐位断言：adj ≡ sim.json 的 px.c
+  · 它与结算层共用同一次复权调用，所以这条
+    在结构上已不可能违反，检查降级为回归断言
+end note
+
+note bottom of L0
+  运行时守卫：canary 自检 —— 增量重放的尾部日若与上次落盘
+  逐字节不一致，立即放弃缓存、回退全量重放（只会变慢，不会静默出错）
+end note
+
+@enduml

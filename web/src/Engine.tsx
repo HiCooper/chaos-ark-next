@@ -135,6 +135,107 @@ function ParamsCard({ params }: { params: any[] }) {
   )
 }
 
+/**
+ * 数据分层图：L0 原始层 → L1 派生面板 → L2 特征层 → L3 导出层 → 展示层。
+ *
+ * 内容（每层是什么、住哪、由谁重建、现在有多少）全部来自引擎侧导出
+ * `engine/rules.py build_layers()` → review.json 的 rules.layers —— 与「参数表」同样
+ * 的规矩：前端不写死数字，磁盘一变图上就跟着变。前端只负责画。
+ *
+ * 箭头 = 数据流方向；重建方向相反（每一层只依赖它的下一层）。
+ * 展示层是例外：它不由 L3 生成，而是与结算层**共用同一次 load_etf_book(L1) 调用**，
+ * 因此单独用虚线 + 紫色标注，并独立成根目录 web/public/view/。
+ */
+function LayersCard({ L }: { L: any }) {
+  const layers: any[] = L?.layers || []
+  if (!layers.length) {
+    return (
+      <Card title="数据分层：从一手快照到页面，每一层都能重建">
+        <div className="note">
+          分层说明尚未随管线导出（需要重跑一次 <code>pipeline.py --all</code>，
+          或该版本的 review.json 由更早的引擎生成）。
+        </div>
+      </Card>
+    )
+  }
+  // 连接线上的说明，键 = 上方那一层
+  const CONN: Record<string, { t: string; bypass?: boolean }> = {
+    L0: { t: '↓ 聚合 · 对齐到同一条交易日轴 —— 这一层是「冻结点」' },
+    L1: { t: '↓ 展成「标的 × 日期 × 字段」三维特征张量，并合成环境热度序列' },
+    L2: { t: '↓ 逐日重放 → 今日结论 / 逐日研判 / 复盘 / 结算事件与取价' },
+    L3: { t: '↖ 旁路：不由 L3 生成，而与结算层共用同一次 load_etf_book(L1) 调用', bypass: true },
+  }
+  return (
+    <Card
+      title="数据分层：从一手快照到页面，每一层都能重建"
+      extra={<Chip tone="accent">{layers.length} 层 · 源：docs/DATA-LAYERS.md</Chip>}
+    >
+      <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
+        核心约定：<b>同一份配置 + 同一份 L1 面板 ⇒ 同一份结论</b>，逐字节可重放。
+        每层只依赖它的下一层，任何非 L0 层都可以整层删除后重建——所以真正需要照看的地基只有
+        L0。<b>箭头是数据流方向，重建方向相反</b>。
+      </div>
+
+      <div className="dlStack">
+        {layers.map((ly: any, i: number) => (
+          <React.Fragment key={ly.k}>
+            <div className={`dlNode ${ly.group === 'view' ? 'view' : ly.group === 'export' ? 'export' : ''}`}>
+              <div className="dlHead">
+                <span className="dlK">{ly.k}</span>
+                <span className="dlTag">{ly.tag}</span>
+                <code className="dlPath">{ly.path}</code>
+                {ly.group === 'view' && <span className="dlBadge">展示层 · 不在依赖链上</span>}
+              </div>
+              <div className="dlRole">{ly.role}</div>
+              <div className="dlRule"><b>规则</b>　{ly.rule}</div>
+              <div className="dlRebuild">重建 ▸ {ly.rebuild}</div>
+              <div className="dlFacts">
+                {(ly.facts || []).map((f: string, j: number) => (
+                  <span className="dlFact" key={j}>{f}</span>
+                ))}
+              </div>
+            </div>
+            {CONN[ly.k] && i < layers.length - 1 && (
+              <div className={`dlConn ${CONN[ly.k].bypass ? 'bypass' : ''}`}>
+                <span className="bar" />
+                <span>{CONN[ly.k].t}</span>
+              </div>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+
+      <div className="dlTwo">
+        <div>
+          <div className="dlSub">可重放性的四条不变式（改了对应模块必须复查）</div>
+          {(L.invariants || []).map((x: any, i: number) => (
+            <div className="dlItem" key={i}>
+              <div className="t">{x.t}</div>
+              <div className="d">{x.d}</div>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div className="dlSub">四道守卫：坏数据进不了站点</div>
+          {(L.guards || []).map((x: any, i: number) => (
+            <div className="dlItem" key={i}>
+              <div className="t">{x.t}</div>
+              <div className="d">{x.d}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="note" style={{ marginTop: 12 }}>
+        {L.note}
+        <div className="muted" style={{ marginTop: 6 }}>
+          规模数字取自磁盘现状（生成于 {L.generated_at}）；完整手册见 <code>docs/DATA-LAYERS.md</code>。
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 function RulesPanel({ rules }: { rules: any }) {
   const groups: any[] = rules.groups || []
   const [gk, setGk] = useState<string>(groups[0]?.k || '')
@@ -275,6 +376,10 @@ export default function Engine({ data, today }: { data: any; today: any }) {
           因此任何一天的结论都可以逐日重放核对。
         </div>
       </Card>
+
+      {/* 数据分层图接在工作流之后：工作流说「同一条代码路径」，这里说这条路径的
+          输入输出分别住在哪一层、怎么重建，以及「可重放」这个保证为什么成立。 */}
+      <LayersCard L={rules?.layers} />
 
       <div className="grid g2">
         <Card title="方向是怎么定的：Rank IC 实证（实测表，随 lab 刷新）">

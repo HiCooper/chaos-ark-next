@@ -713,3 +713,65 @@ td.buyamt { font-weight: 700; font-size: 13px; }
   border-radius: 6px; padding: 5px 8px;
 }
 .forced-note b { color: #7a4b00; }
+
+/* ---------- 引擎页：数据分层图（L0→L1→L2→L3→展示层） ---------- */
+.dlStack { display: flex; flex-direction: column; }
+.dlNode {
+  border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px;
+  background: #fff;
+}
+.dlNode.export { background: #fbfcfe; }
+/* 展示层：虚线框 + 紫色调 —— 与数据层在视觉上就分开 */
+.dlNode.view {
+  border-style: dashed; border-color: #cdbcf7; background: var(--ambush-soft);
+}
+.dlHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dlK {
+  font-weight: 700; font-size: 11px; letter-spacing: .4px;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: 5px; padding: 2px 7px;
+}
+.dlNode.view .dlK { background: #e6dcff; color: #5b3df5; }
+.dlTag { font-weight: 650; font-size: 13.5px; }
+.dlPath {
+  font-size: 11.5px; color: var(--ink-3); background: #f5f6f8;
+  border-radius: 5px; padding: 1px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dlNode.view .dlPath { background: #fff; }
+.dlBadge {
+  margin-left: auto; font-size: 11px; border-radius: 999px; padding: 1px 9px;
+  border: 1px solid #cdbcf7; color: #5b3df5; background: #fff;
+}
+.dlRole { font-size: 12.5px; color: var(--ink-2); margin-top: 7px; }
+.dlRule {
+  font-size: 12px; color: var(--ink-2); margin-top: 5px;
+  border-left: 2px solid var(--line); padding-left: 9px;
+}
+.dlRule b { color: var(--ink); font-weight: 600; }
+.dlRebuild {
+  font-size: 11.5px; color: var(--ink-3); margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dlFacts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.dlFact {
+  font-size: 11px; border: 1px solid var(--line); border-radius: 999px;
+  padding: 1px 8px; color: var(--ink-2); background: #fafbfc;
+  font-variant-numeric: tabular-nums;
+}
+.dlConn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 0 4px 16px; font-size: 11.5px; color: var(--ink-3);
+}
+.dlConn .bar { width: 1px; height: 15px; background: var(--line); }
+.dlConn.bypass { color: #5b3df5; }
+.dlConn.bypass .bar { background: #cdbcf7; }
+.dlTwo { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.dlSub { font-size: 12px; font-weight: 650; color: var(--ink-2); margin-bottom: 7px; }
+.dlItem {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  margin-bottom: 7px; background: #fff;
+}
+.dlItem .t { font-size: 12.5px; font-weight: 620; }
+.dlItem .d { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; }
+@media (max-width: 760px) { .dlTwo { grid-template-columns: 1fr; } }

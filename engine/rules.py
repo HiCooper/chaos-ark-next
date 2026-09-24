@@ -12,6 +12,7 @@ config 一改页面就会静默过期——数字对不上代码，比不显示�
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -500,6 +501,177 @@ def build_rules(universe: Optional[dict] = None) -> dict:
         "params": build_params(),
         # 宇宙规模（标的数 / 交易日数 / 起止）：给引擎页的工作流说明用同一份来源
         "universe": universe or {},
+        # 数据分层总览：给引擎页「数据分层」图用（L0→L1→L2→L3→展示层）
+        "layers": build_layers(),
+    }
+
+
+# --------------------------------------------------------------------- 数据分层
+def _jload(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _nfiles(d: str, suffix: str = "") -> int:
+    """目录里某类文件的个数（缺目录/无权限时按 0 计，不让页面因读不到而报错）。"""
+    try:
+        return sum(1 for fn in os.listdir(d) if fn.endswith(suffix))
+    except Exception:
+        return 0
+
+
+def _kb(path: str) -> Optional[int]:
+    try:
+        return int(os.path.getsize(path) / 1024)
+    except Exception:
+        return None
+
+
+def build_layers() -> dict:
+    """数据分层总览（引擎页「数据分层」图的**内容源**，图本身在前端渲染）。
+
+    为什么放在引擎侧而不是写死在前端：图上的规模数字（多少个标的、多少天、
+    截至哪天）必须与磁盘现状一致。写死在前端，数据一更新图上就开始撒谎。
+    这里只读 cache/ 与 web/public/ 的现状，**不改任何产物**。
+
+    展示层的数字故意不写「截至哪天」：它由 cache/etf_panel.json 切片而来，
+    在 daily 里**先于管线**重建（见 ark.py cmd_daily），所以管线写 review.json 时
+    它已经是最新的——写日期反而会与真实数据错位一天。
+    """
+    root, cache, out = C.ROOT, C.CACHE_DIR, C.OUT_DIR
+    view_root = os.path.join(root, "web", "public", "view")
+
+    man = _jload(os.path.join(root, "data", "raw", "manifest.json")) or {}
+
+    def _man_last(kind: str) -> Optional[str]:
+        lasts = sorted({e.get("last") for e in (man.get(kind) or {}).values() if e.get("last")})
+        return lasts[-1] if lasts else None
+
+    panel = _jload(os.path.join(cache, "panel.json")) or {}
+    etfp = _jload(os.path.join(cache, "etf_panel.json")) or {}
+    fmeta = _jload(os.path.join(cache, "features.npz.meta.json")) or {}
+    fp = _jload(os.path.join(cache, "features.fp.json")) or {}
+    hist = _jload(os.path.join(out, "history.json")) or {}
+    today = _jload(os.path.join(out, "today.json")) or {}
+    sim = _jload(os.path.join(out, "sim.json")) or {}
+    exp = _jload(os.path.join(out, "experiments.json")) or {}
+    vw = _jload(os.path.join(view_root, "etf", "_index.json")) or {}
+
+    fill = panel.get("tail_fill") or panel.get("realtime_fill") or {}
+    l0_last = max([d for d in (_man_last("sw_index"), _man_last("etf"), _man_last("bench"))
+                   if d] or ["—"])
+
+    layers = [
+        {
+            "k": "L0", "tag": "原始层", "path": "data/raw/", "group": "data",
+            "role": "外部数据源的原样快照，系统的地基。拉下来之后不改。",
+            "rule": "write-once + merge-append：重复抓取只追加新日期，重叠日期保留首采值。"
+                    "唯一例外是带 est 标记的估算行——官方真值到了可以覆盖它。",
+            "rebuild": "datasource_sw.py --refresh · build_etf_panel.py --refresh",
+            "facts": [
+                f"申万指数 {len(man.get('sw_index') or {})} 个",
+                f"ETF {len(man.get('etf') or {})} 只",
+                f"基准 {len(man.get('bench') or {})} 个",
+                f"截至 {l0_last}",
+                "每个文件带 sha256",
+            ],
+        },
+        {
+            "k": "L1", "tag": "派生面板", "path": "cache/panel.json · cache/etf_panel.json",
+            "group": "data",
+            "role": "行业宇宙（申万 L1 + L2/L3 佐证 + 基准）统一到一条交易日轴；"
+                    "每行业的可交易 ETF 与逐日选择、流动性。",
+            "rule": "冻结点：结论的可重放性以这份面板内容为准。刷新面板 = 换结论基线，"
+                    "属显式行为，不会在增量更新里悄悄发生。",
+            "rebuild": "datasource_sw.py [--refresh] · build_etf_panel.py",
+            "facts": [
+                f"{len(panel.get('dates') or [])} 个交易日",
+                f"{len(panel.get('series') or {})} 个标的",
+                f"ETF {len(etfp.get('listing') or {})} 只",
+                f"生成于 {panel.get('generated_at') or '—'}",
+            ] + ([f"{len(fill.get('days') or {})} 个兜底日（量额为估算）"] if fill else []),
+        },
+        {
+            "k": "L2", "tag": "特征层", "path": "cache/features.npz · cache/regime.json",
+            "group": "data",
+            "role": "标的 × 日期 × 字段 的三维特征张量（多周期收益、均线偏离、波动、回撤、"
+                    "量能、相对行业等权超额）；外加热度分驱动的环境序列。",
+            "rule": "两条硬约定：特征以 float64 落盘、窗口起点锚定在 features.fp.json。"
+                    "任一条被破坏，「增量重放」就不再等于「全量重放」。",
+            "rebuild": "pipeline.py --refresh",
+            "facts": [
+                f"{len(fmeta.get('dates') or [])} 个交易日 × {len(fmeta.get('codes') or {})} 个标的",
+                f"窗口起点 {fp.get('window_start') or '—'}",
+                f"面板指纹 {(fp.get('panel_fp') or '—')[:12]}",
+            ],
+        },
+        {
+            "k": "L3", "tag": "导出层", "path": "web/public/data/", "group": "export",
+            "role": "管线重放的产物：今日结论、逐日研判（day/<date>.json）、复盘、"
+                    "结算事件与逐日取价（sim.json），以及实验登记簿。",
+            "rule": "可从 L2 整层重放；整个目录删掉也能重建。"
+                    "镜像到 site/data 对外提供，源里没有的文件会被清掉，绝不留下过期文件。",
+            "rebuild": "pipeline.py --all [--tail N] → ark.py sync",
+            "facts": [
+                f"逐日研判 {len(hist.get('days') or [])} 天（2018 起）",
+                f"最新结论日 {today.get('date') or '—'}",
+                f"结算行情 {len((sim.get('px') or {}).get('c') or {})} 只标的",
+                f"实验登记 {len(exp.get('experiments') or [])} 条",
+                f"review.json {_kb(os.path.join(out, 'review.json')) or '—'} KB",
+            ],
+        },
+        {
+            "k": "VIEW", "tag": "展示层", "path": "web/public/view/", "group": "view",
+            "role": "只给页面看的东西：标的走势核验弹窗（etf/<sid>.json 的日期轴 / 不复权价 / "
+                    "结算口径复权价 / 份额折算断点）。",
+            "rule": "不在依赖链上，也不持有任何自己的算法：它由「与结算层同一次 "
+                    "load_etf_book() 调用」的结果切片而来，因此弹窗复权价与结算取价逐位相同。"
+                    "数据层推不动它，必须显式重建——漏跑就会让标的涨跌停在两天前。",
+            "rebuild": "build_etf_webdata.py（消费结算账簿，不自行复权）",
+            "facts": [
+                f"{vw.get('n') or '—'} 只 ETF × {vw.get('days') or '—'} 个交易日",
+                "与结算取价同源（verify 逐位比对）",
+                "独立根目录，不与数据层混住",
+            ],
+        },
+    ]
+
+    invariants = [
+        {"t": "同一份 config + 同一份 L1 面板 ⇒ 同一份结论",
+         "d": "逐字节可重放：历史上任何一天的结论，都能用当时的输入重算出来。"},
+        {"t": "L1 是冻结点",
+         "d": "刷新面板等于换结论基线，必须显式触发——否则「历史结论不变」这个前提就没了。"},
+        {"t": "非 L0 层可以整层删除",
+         "d": "只要 L0 在，任何一层都能离线重建；只有 L0 丢了才需要重新触网。"},
+        {"t": "L0 永不手改",
+         "d": "修正数据 = 修抓取代码 + 重新抓取；direct 编辑 raw 文件会被 manifest 的 sha256 立刻抓到。"},
+    ]
+
+    guards = [
+        {"t": "canary 自检（运行时）",
+         "d": "增量重放时把尾部「上次已有落盘」的日子与旧文件逐字节比对，"
+              "不一致就放弃缓存、回退全量重放。前提被破坏时不会静默出错，只会变慢。"},
+        {"t": "陈旧守卫（发布前）",
+         "d": "各层水位必须同日：面板指纹不符、展示层日期轴端落后、site 未镜像，任一不符即拦住。"},
+        {"t": "红线断言（回归）",
+         "d": "弹窗走势 ≡ 结算取价（逐位相同）。展示层与结算层共用同一次复权调用，"
+              "这条在结构上已不可能违反，检查保留为回归断言。"},
+        {"t": "登记簿 schema",
+         "d": "实验记录字段不全就进不了站点——曾经因此让前端展开时整页白屏。"},
+    ]
+
+    return {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "docs/DATA-LAYERS.md",
+        "layers": layers,
+        "invariants": invariants,
+        "guards": guards,
+        "note": "箭头方向 = 数据流（一手快照 → 页面）。重建方向相反：每一层都只依赖它的下一层。"
+                "展示层是例外——它是 L1 的兄弟产物（与结算层同一次调用），不在重建链上，"
+                "因此独立成根目录 web/public/view/，并且必须显式重建。",
     }
 
 
