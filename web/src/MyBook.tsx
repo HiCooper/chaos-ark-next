@@ -3,7 +3,7 @@ import Calendar from './Calendar'
 import { Chip, num, pct, DataFillBar } from './ui'
 import { useEtfModal } from './etf-modal-host'
 import {
-  fetchSim, runSim, yuan, localToday, execStateOf, daysBetweenISO,
+  fetchSim, runSim, yuan, localToday, execStateOf, daysBetweenISO, bookEvents,
   type SimData, type SimResult,
 } from './sim'
 
@@ -126,11 +126,35 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
       : (a.lastBuy < b.lastBuy ? 1 : -1)))
   }, [acct])
 
+  // 打开标的走势核验弹窗：**按这本账算**。
+  // 入市起始日一改，账户当天的现金与槽位就与引擎默认账本不同，之后买的标的/时点都会分叉，
+  // 所以这里把本账户在该标的上的成交（bookEvents）与统计窗口一起交给弹窗，
+  // 而不是让弹窗去画引擎 review.json 里的 B/S（那会和本页的「当前持仓」对不上）。
+  const openEtf = React.useCallback((sid: string, d?: string) => {
+    if (!acct) { open(sid, d); return }
+    open(sid, d, {
+      events: bookEvents(acct, sid),
+      scope: {
+        from: acct.startDate, to: acct.asOf, capital: acct.capital, realMoney: true,
+      },
+      // 悬浮里的「账户总值」用本账户自己的资金曲线（元），不是引擎的归一化净值
+      curve: { dates: acct.window.map((w) => w.d), nav: acct.window.map((w) => w.v) },
+    })
+  }, [open, acct])
+
+  // 表格里的 ETF 名称：与今日研判 / 复盘页同一种「蓝色下划线」链接样式（.linkbtn.etf-link）
   const EtfCell = ({ sid, d }: { sid: string; d?: string }) => (
-    <span className="etflink" onClick={() => open(sid, d)} title="点击查看走势核验">
-      {sim?.meta[sid]?.n || sid}
+    <>
+      <button
+        className="linkbtn etf-link"
+        style={{ fontWeight: 700, fontSize: 'inherit' }}
+        onClick={() => openEtf(sid, d)}
+        title="点击查看该 ETF 走势、本账户的买卖点与账本"
+      >
+        {sim?.meta[sid]?.n || sid}
+      </button>
       <span className="muted small num" style={{ marginLeft: 5 }}>{String(sid).split('.')[1]}</span>
-    </span>
+    </>
   )
 
   // 执行日为何没有买入（口径 = 结论日的结论 + 执行日开盘时的账户状态）

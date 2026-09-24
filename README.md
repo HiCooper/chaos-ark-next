@@ -36,12 +36,15 @@ web/             React + Vite 前端（纯静态）
   src/MyBook.tsx   「我的持仓」：账户卡片 + 浅红强调的「下一个交易日操作」区块
                    （买入金额/约合手数、卖出金额/参考盈亏）、账户总值/现金/市值/浮盈、
                    账户卡片（总值/市值/现金/浮动盈亏/总仓位）、逐笔持仓（买入日倒序）、
-                   当日已成交对账；被槽位/现金挡下时列出今日结论的建仓候选
+                   当日已成交对账；被槽位/现金挡下时列出今日结论的建仓候选。
+                   点 ETF 弹出的走势核验弹窗**按入市起始日算这本账**（真钱金额、真实份数），
+                   而不是引擎的名义账本（见 `docs/我的持仓-标的弹窗口径.md`）
   src/sim.ts       影子账户（档 2）：把引擎的资金记账规则逐日重放，消费 data/sim.json
   public/data/     引擎产出的 JSON（history / today / review / experiments / sim / day/ / etf/）
 
 site/            部署产物（web/dist 同步 + data 镜像，可直接静态托管）
-docs/            设计与口径文档（年度收益归因 / 数据兜底 / 周期与行业选错审计 / 实验记录规范）
+docs/            设计与口径文档（年度收益归因 / 数据兜底 / 周期与行业选错审计 / 实验记录规范 /
+                 我的持仓-标的弹窗口径）
 engine/lab_registry.py  实验登记簿 schema + 校验 + 生成器（check / new / backfill-kind）
 engine/ark.py    统一入口（init / daily / status / verify / sync / repair）
 report/          研究报告与截图

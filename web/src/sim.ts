@@ -68,6 +68,8 @@ export type Position = {
   mv: number
   pnl: number
   pnlPct: number
+  /** 买入当日该笔占账户总值的比例（与引擎事件同口径：持仓市值 ÷ 账户总值） */
+  wShare: number
 }
 
 export type SellRow = {
@@ -77,8 +79,12 @@ export type SellRow = {
   /** 已实现盈亏（已扣成本） */
   pnl: number
   ret: number
+  /** 毛收益率（未扣双边成本）= 卖出价 ÷ 买入价 − 1 */
+  gross: number
   heldDays: number
   horizon: number
+  /** 卖出当日该笔占账户总值的比例（同引擎事件口径） */
+  wShare: number
 }
 
 export type PlanRow = {
@@ -121,6 +127,9 @@ export type SimResult = {
   positions: Position[]
   todayBuys: Position[]
   todaySells: SellRow[]
+  /** 入市起始日以来**本账户的全部成交**（含已平仓；positions 是其中尚未到期的那些） */
+  buys: Position[]
+  sells: SellRow[]
   /** 今天这批买单的来源（= 上一交易日的结论日）；为空表示起始日之前 */
   todaySignalDate: string | null
   /** 今天没买成的原因（有结论但没建仓时才非空） */
@@ -164,6 +173,12 @@ export function addWeekdays(iso: string, n: number): string {
 
 export function yuan(x: number): string {
   return `¥${Math.round(x).toLocaleString('zh-CN')}`
+}
+
+/** 带符号金额（元）：+¥12,345 / −¥678 / ¥0（零不带符号，负号用真正的减号） */
+export function yuanSigned(x: number): string {
+  const r = Math.round(x)
+  return `${r > 0 ? '+' : r < 0 ? '−' : ''}¥${Math.abs(r).toLocaleString('zh-CN')}`
 }
 
 /** 与引擎一致：建仓后各笔权重随价格漂移；这里只做记账，不做任何再平衡。 */
@@ -211,6 +226,9 @@ export function runSim(
   // 只保留**选中日当天**的成交（逐日重置，避免把整段重放的成交都堆在这里）
   let todayBuys: Position[] = []
   let todaySells: SellRow[] = []
+  // 全区间成交史（弹窗按入市起始日复核本账户在这个标的上到底做了什么，用得到）
+  const allBuys: Position[] = []
+  const allSells: SellRow[] = []
   let realised = 0, fees = 0, nBuys = 0, nSells = 0, cashBlocked = 0, slotBlocked = 0
   let peak = capital, maxdd = 0
   let todaySignalDate: string | null = null
@@ -252,10 +270,17 @@ export function runSim(
           sw: p[0], sid, name: nameOf(sid), action: p[6], w: p[2], score: p[3],
           horizon: p[5], buyDate: d, buyI: k, buyPx: px, shares, amt,
           endDate: p[4], endI: eI, lastPx: px, mv: shares * px,
-          pnl: 0, pnlPct: 0,
+          pnl: 0, pnlPct: 0, wShare: 0,
         }
+        // 组合占比：与引擎同一口径（settlement.py 事件里的 w_share）——
+        // 该笔当日收盘市值 ÷ 账户总值（现金 + 全部持仓当日收盘市值）。
+        const mvBuy = shares * (closeOf(sid, k) ?? px)
+        const valBuy = cash + holdings.reduce(
+          (a, h) => a + h.shares * (closeOf(h.sid, k) ?? h.buyPx), 0) + mvBuy
+        pos.wShare = valBuy > 0 ? mvBuy / valBuy : 0
         holdings.push(pos)
         todayBuys.push(pos)
+        allBuys.push(pos)
         nBuys++
       }
     }
@@ -273,11 +298,17 @@ export function runSim(
           realised += pnl
           fees += h.amt * COST
           nSells++
-          todaySells.push({
+          const gross = h.buyPx > 0 ? px / h.buyPx - 1 : 0
+          // 卖出占比同引擎：该笔卖出市值 ÷ 卖出后账户总值（所得已计入现金）
+          const valSell = cash - proceeds + h.shares * px
+          const sellRow: SellRow = {
             sw: h.sw, sid: h.sid, name: h.name, buyDate: h.buyDate, buyPx: h.buyPx,
             sellPx: px, sellDate: d, shares: h.shares, amt: h.amt, proceeds, pnl,
-            ret: px / h.buyPx - 1 - COST, heldDays: k - h.buyI, horizon: h.horizon,
-          })
+            ret: px / h.buyPx - 1 - COST, gross, heldDays: k - h.buyI, horizon: h.horizon,
+            wShare: valSell > 0 ? (h.shares * px) / valSell : 0,
+          }
+          todaySells.push(sellRow)
+          allSells.push(sellRow)
         }
         continue
       }
@@ -410,6 +441,7 @@ export function runSim(
     realised, fees, peak, maxdd,
     exposure: value > 0 ? mv / value : 0,
     positions: holdings, todayBuys, todaySells, nextBuys, nextQueue, nextSells, nextBlocked,
+    buys: allBuys, sells: allSells,
     todaySignalDate,
     todayBlocked: todaySignalDate === null ? null
       : (todayCands === 0 ? 'no_candidates'
@@ -417,6 +449,69 @@ export function runSim(
         : todayBuys.length === 0 ? 'no_cash' : null),
     nBuys, nSells, cashBlocked, slotBlocked,
   }
+}
+
+/**
+ * 本账户在某只 ETF 上的成交（B/S 事件），喂给「标的走势核验弹窗」。
+ *
+ * 与复盘页的区别：复盘页的事件来自引擎的**名义账本**（初始本金 1.0、按目标权重
+ * 折算的金额），而这里的事件来自「我的持仓」按**你的本金与入市起始日**重放出来的
+ * 真账——金额是元、份数是实际份数、已实现盈亏是真钱。
+ *
+ * 之所以必须换成本账户的成交：入市起始日一改，账户当天的现金与槽位就与引擎默认
+ * 账本不同，之后买的标的/时点都会分叉。若弹窗仍画引擎的 B/S，就和页面上的
+ * 「当前持仓」对不上了。
+ */
+export type BookEvent = {
+  k: 'B' | 'S'
+  date: string
+  sw: string
+  sid: string
+  /** 复权连续价（与弹窗图上的结算口径一致） */
+  price: number
+  /** S 事件：买入日 / 买入价 */
+  bd?: string
+  bpx?: number
+  h?: number
+  a?: string | null
+  sc?: number
+  w?: number
+  /** 占账户总值比例（引擎同口径） */
+  w_share?: number
+  /** B：实际付出的现金（元）；S：该笔原始成本（元） */
+  amt?: number
+  /** S：卖出金额（元，已扣成本） */
+  proceeds?: number
+  /** 份数（B 为建仓份数，S 为卖出份数） */
+  sh?: number
+  gross?: number
+  ret?: number
+  /** S：已实现盈亏（元，已扣双边成本） */
+  pnl?: number
+  why?: string
+}
+
+export function bookEvents(acct: SimResult, sid: string): BookEvent[] {
+  const out: BookEvent[] = []
+  for (const b of acct.buys) {
+    if (b.sid !== sid) continue
+    out.push({
+      k: 'B', date: b.buyDate, sw: b.sw, sid: b.sid, price: b.buyPx,
+      h: b.horizon, a: b.action, sc: b.score, w: b.w, w_share: b.wShare,
+      amt: b.amt, sh: b.shares,
+    })
+  }
+  for (const s of acct.sells) {
+    if (s.sid !== sid) continue
+    out.push({
+      k: 'S', date: s.sellDate, sw: s.sw, sid: s.sid, price: s.sellPx,
+      bd: s.buyDate, bpx: s.buyPx, h: s.horizon, gross: s.gross, ret: s.ret,
+      w_share: s.wShare, amt: s.amt, proceeds: s.proceeds, sh: s.shares,
+      pnl: s.pnl, why: '持有到期（本账户没有提前卖出）',
+    })
+  }
+  return out.sort((a, b) => (a.date === b.date ? (a.k === b.k ? 0 : a.k === 'B' ? -1 : 1)
+    : a.date.localeCompare(b.date)))
 }
 
 /** 交易日间隔（用于「持有 N 个交易日」） */
