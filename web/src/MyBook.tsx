@@ -237,7 +237,11 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
               <div className="opbar-item">
                 <span className="opbar-k">要买入</span>
                 <span className={`opbar-v num ${acct.nextBuys.length ? 'up' : 'mute'}`}>
-                  {acct.nextBuys.length} 笔 · {yuan(buyTotal)}
+                  {acct.nextBuys.length} 笔可执行 · {yuan(buyTotal)}
+                  {acct.nextBuys.length === 0 && acct.nextQueue.length > 0
+                    && <span className="muted" style={{ fontSize: 13, fontWeight: 500 }}>
+                      {' '}（今日结论另有 {acct.nextQueue.length} 笔候选）
+                    </span>}
                 </span>
               </div>
               <div className="opbar-item">
@@ -250,7 +254,13 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
 
             {/* —— 买入 —— */}
             <div className="colhead" style={{ margin: '10px 0 6px' }}>
-              <h2 style={{ fontSize: 15 }}>买入（{acct.nextBuys.length} 笔）</h2>
+              <h2 style={{ fontSize: 15 }}>
+                {acct.nextBuys.length > 0
+                  ? `买入（${acct.nextBuys.length} 笔）`
+                  : acct.nextQueue.length > 0
+                    ? `买入（今日结论 ${acct.nextQueue.length} 笔候选 · 当前不可建仓）`
+                    : '买入（0 笔）'}
+              </h2>
               <span className="n">
                 下一交易日开盘按金额买入；现金不够就少买，绝不卖出腾挪
               </span>
