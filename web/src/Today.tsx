@@ -481,8 +481,18 @@ export default function Today({ data }: { data: any }) {
             </div>
             <div className="env-score">
               热度 {num(ri.env_score, 0)}{ri.confidence != null ? ` · 置信度 ${num(ri.confidence, 2)}` : ''}
-              {ri.forced ? ' · 触发极端保护' : ''}
             </div>
+            {ri.forced && (
+              <div className="forced-note" title="热度分是平滑值，急涨急跌时会滞后；极端回撤/波动优先，直接降档">
+                <b>触发极端保护</b>
+                {ri.bench_dd60 != null && ri.bench_dd60 < -0.12
+                  ? <>：基准 60 日回撤 <b className="num">{pct(ri.bench_dd60)}</b> 跌破 −12% → 强制<b>恐慌</b></>
+                  : <>：波动率历史分位 <b className="num">{num(ri.vol_pct, 3)}</b> 超过 0.92 → 强制<b>防守</b></>}
+                ；当日不按热度分（{num(ri.env_score, 0)} 分，
+                {ri.env_score != null && ri.env_score >= 62 ? '本应「进攻」' : ri.env_score != null && ri.env_score >= 46 ? '本应「中性」' : '本应「防守」'}）
+                ，权重改为按{REGIME_TXT[data.regime] || data.regime}档分配。
+              </div>
+            )}
           </div>
           {comps ? (
             <>
