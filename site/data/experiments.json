@@ -40,7 +40,13 @@
    "result": "ark-1.8.0-executable：年化 10.96% / 回撤 -34.84% / Sharpe 0.654（K=16）。同一批成交只换记账口径：年化 16.45% / 回撤 -38.2%（不再平衡）。K 扫描：8→15.91%/-38.7%、24→10.12%/-26.7%、32→8.38%/-20.8%。",
    "why": "旧净值曲线隐含「每交易日按目标权重再平衡」，事件日志与当日出手里都没有这笔交易，且未计成本、无现金约束——实盘不可执行，回撤被低估约 13pp。",
    "status": "已采用",
-   "conclusion": "（主口径切换）。新增 verify_ledger 账本可执行性对账（净值必须由事件日志独立重放，偏差<5e-4）；删除 15 个实现旧口径的 lab 脚本。 后续：ark-1.8.1-rp-only-k24 停用了 F5 与波动目标闸门、K 提到 24（见 exec-risk-rescan）"
+   "conclusion": "主口径切换。新增 verify_ledger 账本可执行性对账（净值必须由事件日志独立重放，偏差<5e-4）；删除 15 个实现旧口径的 lab 脚本。 后续：ark-1.8.1-rp-only-k24 停用了 F5 与波动目标闸门、K 提到 24（见 exec-risk-rescan）",
+   "kind": "change",
+   "artifacts": [
+    "engine/settlement.py (simulate_cash_account 现金账)",
+    "engine/verify_ledger.py (净值可由事件日志重放)",
+    "docs/口径变更-2026-09-23-可执行账户.md"
+   ]
   },
   {
    "id": "exec-risk-rescan",
@@ -52,7 +58,12 @@
    "why": "可执行账户里风控**只能压新仓预算、压不了存量**：F5 在阴跌期让账户少买，既没降回撤（存量不动），又错过后续修复；波动目标同理。原本「降暴露=降回撤」的机制依赖免费每日再平衡，已随口径修正失效。",
    "next": "待拍板推荐：停用 F5 暴露上限与波动目标闸门、只保留 1/σ 风险平价预算，K 由 16 提到 24。全窗口 12.48%/-31.90%/Sharpe 0.71/Calmar 0.391；滚动一年 均值14.47%/中位1.55%/最差-21.84%/为正63.2%，五项全面优于现行（11.22%/-34.90% 与 13.90%/1.14%/-25.50%/60.9%）。对照：K=8 年化 16.20% 但回撤 -41.79%、最差一年 -35.78%；K=32 最差一年 -21.68%、为正 67.9% 但年化 9.87%。",
    "status": "已落参",
-   "conclusion": "（2026-09-23，boss 确认）。F5 暴露上限停用、波动目标闸门停用、target_positions 16→24，版本 ark-1.8.1-rp-only-k24"
+   "conclusion": "2026-09-23，boss 确认。F5 暴露上限停用、波动目标闸门停用、target_positions 16→24，版本 ark-1.8.1-rp-only-k24",
+   "kind": "change",
+   "artifacts": [
+    "engine/lab_exec_risk.py (23 变体风控重扫)",
+    "docs/口径变更-2026-09-23-可执行账户.md"
+   ]
   },
   {
    "id": "entry-dates-rolling-exec",
@@ -63,7 +74,12 @@
    "result": "1858 个入市起点 × 恰好持有 252 交易日：系统 均值 13.88% / 中位 1.14% / 最差 -25.50% / 为正 60.8%；基准买入持有 均值 5.27% / 中位 5.97% / 最差 -28.79% / 为正 57.6%；超额 均值 +8.61% / 中位 +0.81%。F5 对照：去掉后均值 16.21%（+2.3pp），最差 -27.74%（略差 2.2pp）。",
    "why": "口径修正（删除免费每日再平衡）+ 候选集修正（旧实验喂的是旧口径实际成交子集，不是全部结论）。",
    "status": "已记录",
-   "conclusion": "脚本 engine/lab_entry_dates.py（已修）；结果写 cache/lab_entry_dates.json"
+   "conclusion": "脚本 engine/lab_entry_dates.py（已修）；结果写 cache/lab_entry_dates.json",
+   "kind": "change",
+   "artifacts": [
+    "engine/lab_entry_dates.py",
+    "cache/lab_entry_dates.json"
+   ]
   },
   {
    "id": "exposure-cap",
@@ -135,7 +151,8 @@
     "cache/lab_downyear*.json",
     "report/下跌年份不亏损_优化研究报告.md"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "baseline-1.6.0",
@@ -185,7 +202,8 @@
     "engine/pipeline.py (ENGINE_VERSION)",
     "web/public/data/review.json"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "gate-2024",
@@ -352,7 +370,8 @@
     "engine/diag_gate2.py",
     "engine/diag_state.py"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "etf-share-adjust",
@@ -413,7 +432,8 @@
     "engine/review.py (结算 basis 披露)",
     "cache/lab_gate2024.json（B0 变体）"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "baseline-1.5.0",
@@ -484,7 +504,8 @@
     "engine/review.py",
     "web/public/data/review.json"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "baseline-1.4.0",
@@ -544,7 +565,8 @@
     "engine/pipeline.py (ENGINE_VERSION)",
     "web/public/data/review.json"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "mature-weight",
@@ -601,7 +623,8 @@
     "engine/lab_mature_weight.py",
     "cache/lab_mature_weight.json"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "stage-horizon",
@@ -648,7 +671,8 @@
     "engine/lab_stage_horizon.py",
     "cache/lab_stage_horizon.json"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "downside-portfolio",
@@ -692,7 +716,8 @@
     "cache/lab_downside.json",
     "engine/settlement.py (floor_series/entry_gate/sid_cooldown 实验参数，默认关闭)"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "open-edge",
@@ -726,7 +751,8 @@
     "engine/review.py",
     "engine/rebuild_review.py"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "datasource-sw",
@@ -767,11 +793,12 @@
     "engine/rawstore.py",
     "docs/DATA-LAYERS.md"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "conclusion-filter",
-   "date": "2026-09 早期会话",
+   "date": "2026-09",
    "title": "结论前置过滤（自相矛盾 / 追高降级）",
    "layer": "信号层（结论过滤）",
    "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
@@ -806,11 +833,13 @@
     "engine/config.py (CONCLUSION_FILTER)",
     "engine/lab_opt*.py"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment",
+   "date_note": "早期会话"
   },
   {
    "id": "portfolio-params",
-   "date": "2026-09 早期会话",
+   "date": "2026-09",
    "title": "组合执行参数：score_tilt + 每日新建仓上限",
    "layer": "结算层（配权/节奏）",
    "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
@@ -844,11 +873,13 @@
     "engine/config.py (PORTFOLIO)",
     "engine/settlement.py (score_tilt)"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment",
+   "date_note": "早期会话"
   },
   {
    "id": "risk-control",
-   "date": "2026-09 早期会话",
+   "date": "2026-09",
    "title": "风险平价 + 波动目标降仓（同批否决止损/熔断/闸门）",
    "layer": "结算层（权重与总暴露）",
    "vs": "旧基线（东财）：组合最深回撤 -39.5%（2021-09→2022-04）",
@@ -881,11 +912,13 @@
     "engine/config.py (RISK_CONTROL)",
     "engine/settlement.py"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment",
+   "date_note": "早期会话"
   },
   {
    "id": "market-gate",
-   "date": "2026-09 早期会话",
+   "date": "2026-09",
    "title": "MA200 大盘二元闸门",
    "layer": "结算层（入场开关）",
    "vs": "旧基线（东财）：年化 8.76% / 回撤 -33.11%",
@@ -916,11 +949,13 @@
     "engine/settlement.py (bench_ma_gate)",
     "web/public/data/review.json (gated 对照)"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment",
+   "date_note": "早期会话"
   },
   {
    "id": "horizon-penalty",
-   "date": "2026-09 早期会话",
+   "date": "2026-09",
    "title": "持有周期估计的回撤惩罚系数",
    "layer": "信号层（周期估计）",
    "vs": "基准 version: ark-1.2.x（历史相似状态匹配选周期）",
@@ -948,7 +983,9 @@
    "artifacts": [
     "engine/horizon.py"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment",
+   "date_note": "早期会话"
   },
   {
    "id": "stage-infra",
@@ -982,7 +1019,8 @@
     "engine/pipeline.py",
     "web/src/Today.tsx"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "entry-dates-rolling",
@@ -1046,7 +1084,8 @@
     "cache/lab_entry_dates.json"
    ],
    "rerun_executable": "2026-09-23 在可执行口径下重跑（lab_entry_dates 已修：候选集从「旧口径成交子集」改为「全部结论」；账户模型换 simulate_cash_account；起点 2018-01-02..2025-09-05 共 1858 个）：系统 均值 13.88% / 中位 1.14% / p5 -14.14% / 最差 -25.50% / 为正 60.8%；无 F5 对照 均值 16.21% / 最差 -27.74%；基准买入持有 均值 5.27% / 中位 5.97% / 为正 57.6%；超额 均值 +8.61% / 中位 +0.81% / 为正 52.4%。分年份：2019 +76.9%、2020 +32.5%、2021 -0.23%、2022 -3.32%、2023 -7.95%、2024 -1.55%、2025 +0.50%。最差起点集中在 2021-11/12（ATTACK）约 -25.5%。注意：中位数上系统（1.14%）低于基准（5.97%），均值靠少数年份的大幅超额拉高。",
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "signal-break",
@@ -1101,13 +1140,14 @@
     "drawdown": "G3_055 +3.90pp；G4 族 -0.4~-1.0pp 反而略深"
    },
    "robustness": "P0 逐字节一致 ✓；G4 为宽平台 ✓；G3 剂量单调 ✓；G4 增益跨年份分布（2022/2024/2025/2026）但 2025 单年贡献仍偏大（+12.6pp，准则④提示）；未做滞后复检（组合层叠加实验中补做）",
-   "conclusion": "（G3_055 部分，随 ark-1.7.0-stability）。G4 平台成立（P85≈P90>P95、F45≈F50≈F55）；G3 剂量单调（0.55 最优）。G4_F55 / G3_055 进入叠加实验入围名单\nG4 平台与 G3 剂量方向均确认。信号层不单独落参，进入信号×组合叠加实验寻找全局最优。",
+   "conclusion": "G3_055 部分，随 ark-1.7.0-stability。G4 平台成立（P85≈P90>P95、F45≈F50≈F55）；G3 剂量单调（0.55 最优）。G4_F55 / G3_055 进入叠加实验入围名单\nG4 平台与 G3 剂量方向均确认。信号层不单独落参，进入信号×组合叠加实验寻找全局最优。",
    "artifacts": [
     "engine/lab_signal_break.py",
     "cache/lab_signal_break.json",
     "cache/lab_gate_*/"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   },
   {
    "id": "stability-overlay",
@@ -1169,10 +1209,11 @@
     "cache/lab_combo.json",
     "report/稳定性突破_信号与暴露叠加研究.md"
    ],
-   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测"
+   "caveat": "该结论基于已废弃的「每日免费再平衡」口径，需在可执行口径下重测",
+   "kind": "experiment"
   }
  ],
  "baseline_history_note": "2026-09-23 口径变更：结算层从「公式给净值（隐含每日免费再平衡）」改为「有限资金池可执行账户」。旧基准 ark-1.7.2-cash-1pct 为 年化 16.16% / 回撤 -21.37% / Sharpe 0.898，该口径**不可执行**（实盘无法每日再平衡，且无现金约束），仅作历史对照。所有在此之前登记的实验结论（含 F5 暴露上限、波动目标、集中度、稳定性研究）均需在可执行口径下重测。详见 docs/口径变更-2026-09-23-可执行账户.md",
- "schema_note": "每条实验统一为：status 短徽章 + caveat 告警 + hypothesis/params/results/goals/robustness/conclusion；「口径变更记录」型仅有 result/why/conclusion",
+ "schema_note": "统一 schema 见 engine/lab_registry.py（check 校验 / new 生成）：两类 kind=experiment|change；7 种状态徽章；results 行允许 数值型(cagr+maxdd) 或 文字型(note)",
  "normalized_at": "2026-09-24 12:03:22"
 }

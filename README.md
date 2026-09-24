@@ -41,7 +41,8 @@ web/             React + Vite 前端（纯静态）
   public/data/     引擎产出的 JSON（history / today / review / experiments / sim / day/ / etf/）
 
 site/            部署产物（web/dist 同步 + data 镜像，可直接静态托管）
-docs/            设计与口径文档（含 年度收益归因-2022-2026.md、数据兜底-实时行情补尾部.md）
+docs/            设计与口径文档（年度收益归因 / 数据兜底 / 周期与行业选错审计 / 实验记录规范）
+engine/lab_registry.py  实验登记簿 schema + 校验 + 生成器（check / new / backfill-kind）
 engine/ark.py    统一入口（init / daily / status / verify / sync / repair）
 report/          研究报告与截图
 ```

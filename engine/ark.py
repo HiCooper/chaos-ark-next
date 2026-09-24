@@ -358,6 +358,12 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
     if _run(py, "pipeline.py", args, "daily_pipeline") != 0:
         raise SystemExit("管线运行失败")
 
+    print("[daily/4] 校验实验登记簿 ...")
+    if _run(py, "lab_registry.py", ["check"], "daily_labreg") != 0:
+        raise SystemExit("实验登记簿校验失败（web/public/data/experiments.json）——"
+                         "修好再发布；生成齐全骨架：python3 engine/lab_registry.py new <id> "
+                         "--kind experiment|change --title '…' --layer '…'")
+
     print("[daily/4] 同步部署副本 ...")
     sync_site()
 
@@ -388,6 +394,16 @@ def cmd_verify() -> int:
         print(f"  ✗ {len(bad)} 个 L0 文件校验失败（禁止手改 L0，请用 ark.py repair）")
         return 1
     print("  ✓ L0 完整")
+
+    print("[verify] 实验登记簿 schema 校验 ...")
+    r = subprocess.run([pick_python(need_akshare=False), "-u",
+                        os.path.join(ENGINE, "lab_registry.py"), "check"],
+                       cwd=ENGINE, capture_output=True, text=True)
+    print((r.stdout or r.stderr or "").strip()[-1500:])
+    if r.returncode != 0:
+        print("  ✗ 实验登记簿校验失败")
+        return 1
+    print("  ✓ 实验登记簿合规")
 
     print("[verify] 账本可执行性对账（净值必须能由事件日志重放）...")
     r = subprocess.run([pick_python(need_akshare=False), "-u",

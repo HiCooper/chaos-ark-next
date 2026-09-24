@@ -88,7 +88,8 @@ function LabTable({ head, rows }: { head: string[]; rows: React.ReactNode[][] })
 
 function ExperimentCard({ e }: { e: any }) {
   const [open, setOpen] = useState(false)
-  const isRecord = !e.params && !e.results && !e.goals
+  // 优先用显式 kind（engine/lab_registry.py 的 schema）；老数据缺 kind 时按字段形状兜底
+  const isRecord = e.kind ? e.kind === 'change' : (!e.params && !e.results && !e.goals)
   return (
     <CardBoundary title={e.title}>
       <div className={`card lab-card ${open ? 'on' : ''}`}>
@@ -96,7 +97,9 @@ function ExperimentCard({ e }: { e: any }) {
           <span className={`lab-st ${STATUS_CLS[e.status] || 'lab-st-record'}`}>{e.status || '—'}</span>
           <div className="lab-title">
             <b>{e.title}</b>
-            <span className="lab-meta">{e.layer}{e.date ? ` · ${e.date}` : ''}</span>
+            <span className="lab-meta">
+              {e.layer}{e.date ? ` · ${e.date}` : ''}{e.date_note ? ` · ${e.date_note}` : ''}
+            </span>
           </div>
           <span className="chev">{open ? '▾' : '▸'}</span>
         </div>
@@ -202,7 +205,13 @@ export default function Lab({ data }: { data: any }) {
           {(principles?.rules || []).map((r: string) => <li key={r}>{r}</li>)}
         </ul>
         <div className="lab-count muted small">
-          共 {list.length} 条记录 · 点击任意一条展开详情（按状态徽章着色：绿=已采用/已落参，红=已否决，黄=待拍板/部分否决，灰=仅登记）
+          共 {list.length} 条记录 · 点击任意一条展开详情（徽章：绿=已采用/已落参，红=已否决，
+          黄=待拍板/部分否决，灰=仅登记）。<br />
+          <b>产出规则</b>：新增实验用
+          <code>python3 engine/lab_registry.py new &lt;id&gt; --kind experiment|change --title '…' --layer '…'</code>
+          生成字段齐全的骨架（未填完时校验必然失败）；<code>ark.py verify</code> 与
+          <code>ark.py daily</code> 都会校验 schema，坏记录进不了站点。规范见
+          <code>docs/实验记录规范.md</code>。
         </div>
       </div>
 
