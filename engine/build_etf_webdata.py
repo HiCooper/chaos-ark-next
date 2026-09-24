@@ -98,11 +98,18 @@ def main() -> None:
             "sw": next((sw for sw, s in sw_to_etf.items() if s == sid), None),
         }
     with open(os.path.join(OUT_DIR, "_index.json"), "w", encoding="utf-8") as f:
-        json.dump({"generated": True, "n": len(index), "etfs": index},
+        json.dump({"generated": True, "n": len(index),
+                   # 日期轴末端 = 弹窗走势的最后一个交易日。水位检查（ark.py status/verify）
+                   # 靠它发现「ETF 面板已更新、但走势文件没重建」这类陈旧——曾经因此
+                   # 让弹窗标的涨跌停在 09-21，而账户已经盯市到 09-23。
+                   "last": dates[-1] if dates else None,
+                   "days": len(dates),
+                   "etfs": index},
                   f, ensure_ascii=False, separators=(",", ":"))
 
     print(f"[etf-webdata] 写出 {n_files} 只 ETF 走势文件 + _breaks.json "
-          f"({len(flat)} 处折算断点) + _index.json ({len(index)} 只) → {OUT_DIR}")
+          f"({len(flat)} 处折算断点) + _index.json ({len(index)} 只，行情截至 "
+          f"{dates[-1] if dates else '—'}) → {OUT_DIR}")
 
 
 if __name__ == "__main__":

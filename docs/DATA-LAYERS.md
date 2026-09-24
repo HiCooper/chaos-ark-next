@@ -59,6 +59,13 @@ L4  cache/               实验台一次性产物                  可随时删�
 由 `pipeline.py --all` 从 L2 全量重放生成；`site/data/` 是它的部署副本。
 **可以整目录删除**，重跑 pipeline 即可恢复。
 
+`etf/<sid>.json` + `etf/_index.json`（标的走势核验弹窗）**不在**这条重建链上：
+它由 `build_etf_webdata.py` 从 `cache/etf_panel.json` 单独导出，因此必须显式重建。
+漏跑的症状很隐蔽——账户已经盯市到最新交易日，点开 ETF 却显示涨跌停在两天前
+（2026-09-24 实际发生过一次）。现在 `ark.py daily` / `ark.py init` 都会跑它，
+`_index.json` 里记了日期轴末端 `last`，`ark.py status` / `verify` 把它当作一层水位
+参与「各层应当同日」的校验，不一致直接失败。
+
 ## L4 — 实验台 `cache/`
 
 `lab_*.json` / `ic_diag*.json` / `lab_trades.json` 等：一次性实验产物，
@@ -71,12 +78,13 @@ L4  cache/               实验台一次性产物                  可随时删�
 python3 engine/ark.py init          # clone 后一键初始化
 python3 engine/ark.py daily         # 收盘后更新（取数 + 增量重放 + 同步）
 python3 engine/ark.py status        # 水位报告（「更新到哪天了」的唯一口径）
-python3 engine/ark.py verify        # L0 sha256 + 特征层一致性
+python3 engine/ark.py verify        # L0 sha256 + 特征层一致性 + 各层水位同日
 
 # 手工分步（等价于 daily）
 cd engine && akshare-venv-python datasource_sw.py --refresh   # L0+L1 面板
 akshare-venv-python build_etf_panel.py --refresh              # L1 ETF 面板（--refresh 不能省）
 akshare-venv-python pipeline.py --refresh --all --tail 12     # L2+L3 增量
+akshare-venv-python build_etf_webdata.py                     # 弹窗走势数据（不在上面的依赖链里）
 python3 engine/ark.py sync                                    # web/public/data → site/data
 
 # 东财路径（限流解除后可作为备源）

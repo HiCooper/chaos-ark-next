@@ -588,7 +588,14 @@ export function EtfModal(props: EtfModalInput) {
                 <div className="l">{scoped ? '入市以来 ETF 涨跌（复权）' : 'ETF 累计涨跌（复权）'}</div>
                 <div className={`v num ${etfTotal.pct >= 0 ? 'up' : 'down'}`}>{pct(etfTotal.pct, 2)}</div>
                 <div className="m">{etfTotal.from} → {etfTotal.to}
-                  {scoped ? '（入市起始日 → 选中日）' : '（数据起止）'}</div>
+                  {!scoped
+                    ? '（数据起止）'
+                    : etfTotal.to === scope?.to
+                      ? '（入市起始日 → 选中日）'
+                      // 该标的在选中日没有行情（停牌/退市/数据缺口）时如实说明，
+                      // 不把"最后一个行情日"含糊地写成"选中日"
+                      : `（入市起始日 → 该标的最后一个行情日；选中日 ${scope?.to} 无该标的行情）`}
+                </div>
               </div>
             )}
             {settled && (

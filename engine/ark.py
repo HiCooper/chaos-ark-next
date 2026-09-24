@@ -164,6 +164,12 @@ def water_level() -> dict:
     lv["L1_etf_panel"] = ({"last": etfp["dates"][-1], "etfs": len(etfp.get("listing", {}))}
                           if etfp else None)
 
+    # 弹窗走势数据（web/public/data/etf/*.json）：不在 L0→L3 的重建链上，必须显式重建。
+    # 漏掉它就会出现「账户已盯市到最新交易日、弹窗里的标的涨跌却停在两天前」。
+    etfw = _jload(os.path.join(OUT_DIR, "etf", "_index.json"))
+    lv["L3_etf_webdata"] = ({"last": etfw.get("last"), "etfs": etfw.get("n"),
+                             "days": etfw.get("days")} if etfw else None)
+
     fmeta = _jload(os.path.join(ROOT, "cache", "features.npz.meta.json"))
     lv["L2_features"] = ({"last": fmeta["dates"][-1], "days": len(fmeta["dates"]),
                           "codes": len(fmeta["codes"])} if fmeta else None)
@@ -271,6 +277,10 @@ def cmd_init() -> int:
     if _run(py, "pipeline.py", ["--refresh", "--all"], "init_pipeline") != 0:
         raise SystemExit("管线运行失败")
 
+    print("[init/4] 标的走势数据（弹窗用）...")
+    if _run(py, "build_etf_webdata.py", [], "init_etf_web") != 0:
+        raise SystemExit("标的走势数据构建失败")
+
     print("[init/4] 同步部署副本 ...")
     sync_site()
     print("\n初始化完成。日常更新只需：python3 engine/ark.py daily")
@@ -364,6 +374,12 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
                          "修好再发布；生成齐全骨架：python3 engine/lab_registry.py new <id> "
                          "--kind experiment|change --title '…' --layer '…'")
 
+    # 弹窗走势数据必须跟着 ETF 面板一起重建：它不在 L0→L3 的依赖链上，
+    # 漏跑就会出现「我的持仓已盯市到 09-23、点开 ETF 却显示涨跌止于 09-21」。
+    print("[daily/4] 重建标的走势数据（弹窗用）...")
+    if _run(py, "build_etf_webdata.py", [], "daily_etf_web") != 0:
+        raise SystemExit("标的走势数据构建失败")
+
     print("[daily/4] 同步部署副本 ...")
     sync_site()
 
@@ -414,6 +430,23 @@ def cmd_verify() -> int:
         return 1
     lv = water_level()
     fp = lv.get("L2_features_fp") or {}
+
+    # 各层水位必须同日：ETF 面板更新了、但弹窗走势数据没重建，就会让页面上的
+    # 标的涨跌停在旧日期（账户已盯市到最新交易日）。这里显式拦住。
+    print("[verify] 各层水位一致性 ...")
+    wd = dict(_last_dates(lv))
+    wd.pop("L0_realtime_fill", None)          # 兜底日期提示，不是一层数据
+    uniq = sorted({d for d in wd.values() if d})
+    if len(uniq) <= 1:
+        print(f"  ✓ 各层同日：{uniq[0] if uniq else '—'}")
+    else:
+        print(f"  ✗ 水位不一致：{uniq}")
+        for k, d in sorted(wd.items()):
+            print(f"      {k:18s} {d}")
+        print("     排查：L0 抓取 → panel/etf_panel 重建 → pipeline --refresh → "
+              "build_etf_webdata.py → ark.py daily")
+        return 1
+
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
     if panel and fp:
         # 指纹检查必须在带 numpy 的解释器里跑：pipeline.py 顶层 import numpy，
