@@ -42,6 +42,13 @@ def _norm(arr: np.ndarray, lo: float, hi: float) -> np.ndarray:
     return np.where(np.isnan(arr), 50.0, out)
 
 
+# 实验台入口：横截面相对强度（行业 ret120 − 全市场中位）在 mainline 里的权重。
+# 生产默认 0.0（不改行为）；>0 时 mainline 按 (1-w)·绝对动量 + w·横截面相对强度 混合。
+# 背景：审计发现「行业选错」占错误 54.6%，被选行业本周期均值 −9.4% 而同日同行中位 +1.1%
+# —— 现有 mainline 全是绝对动量，没有"相对全市场"的排序。见 docs/行业选错归因审计-2026-09-24.md
+RS_CROSS_W = float(os.environ.get("ARK_RS_CROSS_W", 0.0))
+
+
 def _safe(arr: np.ndarray) -> np.ndarray:
     return np.nan_to_num(arr, nan=0.0)
 
@@ -50,13 +57,18 @@ def compute_dimension_scores(fs: FeatureStore) -> Dict[str, np.ndarray]:
     """计算 5 个与 regime 无关的维度。
 
     方向由 engine/diag*.py 的 Rank IC 实证确定，不是直觉：
-      - 长期（120/250 日）动量强正向：IC≈0.55@40日，分年度稳定 0.52-0.58，分组单调；
+      - 长期（120/250 日）动量在长持有窗口上正向：实测横截面 Rank IC 在 80/100 日为
+        +0.031/+0.037（t≈6~7），40 日仅 −0.008（t≈−1）——**早期文档写的「IC≈0.55@40日」是
+        旧版本诊断脚本的结果，已作废**；可用 `python3 engine/lab_sector_fix.py ic --write` 复现；
       - 短期（20/60 日）为反转，且**仅在长期上升趋势内有效**（条件 IC +0.12 vs +0.002），
         因此 pullback / rebound 两个维度按主线强度做条件加权，避免在长期弱势行业里「接飞刀」。
     """
     codes = fs.codes
     n_d = len(fs.dates)
     out = {d: np.full((len(codes), n_d), np.nan) for d in DIMS}
+    # 横截面相对强度的基准：全市场（L1+L2 候选）ret120 的当日中位
+    _ret120_all = np.vstack([fs.series(c, "ret_120") for c in codes])
+    med120 = np.nanmedian(_ret120_all, axis=0) if RS_CROSS_W > 0 else None
 
     for ci, code in enumerate(codes):
         ret5 = fs.series(code, "ret_5")
@@ -80,6 +92,10 @@ def compute_dimension_scores(fs: FeatureStore) -> Dict[str, np.ndarray]:
                     + 0.25 * _norm(ret250, -0.15, 0.80)
                     + 0.20 * _norm(dist120, -0.10, 0.30)
                     + 0.15 * _norm(dist250, -0.15, 0.40))
+        if RS_CROSS_W > 0:
+            rs_cross = ret120 - med120          # 相对全市场中位（横截面）
+            mainline = ((1.0 - RS_CROSS_W) * mainline
+                        + RS_CROSS_W * _norm(rs_cross, -0.15, 0.35))
         ml_gate = PB_GATE_BASE + (1.0 - PB_GATE_BASE) * np.nan_to_num(mainline, nan=50.0) / 100.0
 
         # ---- 2. pullback：短期回调深度（只有在主线里才成立）

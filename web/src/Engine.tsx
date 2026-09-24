@@ -27,6 +27,69 @@ const stepsFor = (u: any) => {
   ]
 }
 
+/** 横截面 Rank IC 实测表：读 data/ic.json（由 lab_sector_fix.py ic --write 生成，替代前端硬编码） */
+function IcPanel() {
+  const [ic, setIc] = React.useState<any>(null)
+  const [miss, setMiss] = React.useState(false)
+  React.useEffect(() => {
+    fetch('data/ic.json')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j) => setIc(j))
+      .catch(() => setMiss(true))
+  }, [])
+  if (miss || (ic && !ic.rows)) {
+    return (
+      <div className="note">
+        IC 表尚未生成。运行 <code>python3 engine/lab_sector_fix.py ic --write</code> 后刷新即可
+        （生成 data/ic.json，避免把 IC 数字硬编码在前端）。
+      </div>
+    )
+  }
+  if (!ic) return <div className="muted small">正在读取 data/ic.json …</div>
+  const hs = ['20', '40', '60', '80', '100']
+  return (
+    <>
+      <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 8 }}>
+        引擎每个维度的方向都来自「该指标与未来超额收益的<b>横截面 Rank IC</b>」检验
+        （逐日 spearman，全 126 标的；超额 = 行业 − 行业等权），不是经验直觉。
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>信号</th>
+            {hs.map((h) => <th key={h} style={{ textAlign: 'right' }}>未来 {h} 日</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {ic.rows.map((r: any) => (
+            <tr key={r.factor}>
+              <td>{r.factor}</td>
+              {hs.map((h) => {
+                const v = r.ic?.[h]
+                if (!v) return <td key={h} />
+                return (
+                  <td key={h} className="num" style={{ textAlign: 'right', color: v.mean >= 0 ? 'var(--up)' : 'var(--down)' }}>
+                    {v.mean >= 0 ? '+' : ''}{Number(v.mean).toFixed(3)}
+                    <span className="muted" style={{ fontSize: 11 }}> (t {v.t >= 0 ? '+' : ''}{v.t})</span>
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="small muted" style={{ marginTop: 10 }}>
+        生成于 {ic.generated_at} · 引擎 {ic.engine_version} · 由 <code>engine/lab_sector_fix.py</code> 实测。
+        读法：<b>短期动量（20/60 日）IC 为负</b>（t≈−6，属反转），<b>长期动量要到 60 日以上才转正、
+        80/100 日最强</b>（长期主线综合 +0.037 / +0.052，t≈8~11）——这解释了为什么系统只做长期主线，
+        也解释了 80/100 日为什么是有效持有窗口。<b>IC 绝对值只有 0.03~0.05</b>：单日选品的甄别力有限，
+        这套系统的收益来自「低胜率 + 右尾」，因此仓位管理（K、不设假风控）比继续调权重更重要。
+        注：此前页面上的「IC +0.55@40 日」来自早期版本的诊断脚本（已在 2026-09 清理），与当前口径不符，已改为实测表。
+      </div>
+    </>
+  )
+}
+
 /** 参数表：每个旋钮是什么、当前值、作用在哪一层。与「规则」分开，互不混淆。 */
 function ParamsCard({ params }: { params: any[] }) {
   const mods: any[] = params || []
@@ -214,28 +277,8 @@ export default function Engine({ data, today }: { data: any; today: any }) {
       </Card>
 
       <div className="grid g2">
-        <Card title="方向是怎么定的：Rank IC 实证">
-          <div className="small" style={{ color: 'var(--ink-2)', marginBottom: 10 }}>
-            引擎的每一个维度方向，都来自「该指标与未来超额收益的横截面 Rank IC」检验，而不是经验直觉。
-            第一轮诊断的结果推翻了最初的设计：
-          </div>
-          <Bars
-            rows={[
-              { label: '120 日动量（主线）', value: 0.55, text: 'IC +0.55', color: '#1b8a4b' },
-              { label: '250 日动量', value: 0.37, text: 'IC +0.37', color: '#1b8a4b' },
-              { label: '60 日动量（短期）', value: 0.07, text: 'IC -0.07', color: '#c62828' },
-              { label: '20 日动量（短期）', value: 0.07, text: 'IC -0.07', color: '#c62828' },
-              { label: '距 MA60 偏离', value: 0.09, text: 'IC -0.09', color: '#c62828' },
-            ]}
-            max={0.6}
-          />
-          <div className="small muted" style={{ marginTop: 10 }}>
-            结论：A 股行业层面是「长期主线强动量 + 短期反转」的双层结构。
-            120 日动量分年度 IC 稳定在 0.52–0.58，五分组未来 40 日超额从 -5.0% 单调到 +6.0%；
-            而 60 日以内的动量全部为负（t 约 -7 到 -10）。
-            因此系统只做长期主线方向的判断，短期反转仅用于在主线内部找买点，
-            且按主线强度做条件加权——下跌趋势中的反弹不参与。
-          </div>
+        <Card title="方向是怎么定的：Rank IC 实证（实测表，随 lab 刷新）">
+          <IcPanel />
         </Card>
 
         <Card title="周期是怎么定的">
