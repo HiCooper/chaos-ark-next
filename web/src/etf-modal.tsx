@@ -639,9 +639,14 @@ export function EtfModal(props: EtfModalInput) {
               <div className="note" style={{ borderLeft: `3px solid ${C_BRK}`, paddingLeft: 10, margin: '10px 0' }}>
                 <b>该标的发生过 {data.breaks.length} 次「份额折算」（拆分/合并）</b>——
                 折算日单位价格按整数倍跳变（图中原始市价的断崖），但持有人份额同步反向变化、总价值不变。
-                结算用「复权连续价」消除这种价值中性跳变（红线上无断点）。
-                复权因子 ×{data.breaks[0].factor.toFixed(4)} 起的所有日期，
-                <b>复权价 = 原始市价 × 因子</b>，收益按复权价算才正确。
+                结算用「复权连续价」消除这种价值中性跳变（红线上无断点）：
+                {data.breaks.map((b, i) => (
+                  <span key={i}>{i > 0 ? '、' : ' '}{b.date} ×{b.factor.toFixed(4)}
+                    （{REF_TXT[b.ref_src] || b.ref_src}参照）</span>
+                ))}
+                ；<b>复权价 = 原始市价 × 当日适用的累计因子</b>——多次折算要连乘，
+                最近一次之后为 ×{data.breaks.reduce((a, b) => a * b.factor, 1).toFixed(4)}。
+                收益按复权价算才正确。
               </div>
             )}
 
