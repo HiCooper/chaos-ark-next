@@ -257,31 +257,37 @@ function PosRow({ x, tone }: { x: any; tone?: 'sell' | 'warn' }) {
 
 /** 今日出手：只关注当日到期的出手标的。 */
 function ActionToday({ a }: { a: any }) {
+  const MAIN = '主口径：持有到建议周期结束当日收盘卖出'
   if (!a) {
     return (
       <div className="card">
-        <div className="colhead"><h2>当日出手</h2></div>
+        <div className="colhead">
+          <h2>当日出手</h2>
+          <span className="n">需要 ETF 结算数据</span>
+        </div>
         <div className="empty">未生成持仓回执（缺少 ETF 结算数据）</div>
       </div>
     )
   }
   const sell = a.sell_today || []
+  // 当日无出手时，版式与「当日结论」一致：标题 + 右上角 note + 居中提示
   return (
     <div className="card">
       <div className="colhead">
         <h2>当日出手 · {a.as_of}</h2>
+        <span className="n">{sell.length > 0 ? `${sell.length} 笔 · ${MAIN}` : MAIN}</span>
       </div>
 
-      <div className="actsec">
-        <div className="sh"><i className="dot sell" />当日出手
-          <span className="cnt">{sell.length} 笔 · 主口径：持有到建议周期结束当日收盘卖出</span>
+      {sell.length === 0 ? (
+        <div className="empty">当日无到期标的。主口径下持仓一律持有到建议周期结束，到期日才出手。</div>
+      ) : (
+        <div className="actsec">
+          <div className="sh"><i className="dot sell" />当日到期卖出
+            <span className="cnt">{sell.length} 笔</span>
+          </div>
+          {sell.map((x: any, i: number) => <PosRow key={i} x={x} tone="sell" />)}
         </div>
-        {sell.length === 0
-          ? <div className="muted small" style={{ padding: '4px 0' }}>
-              当日无到期标的。主口径下持仓一律持有到建议周期结束，到期日才出手。
-            </div>
-          : sell.map((x: any, i: number) => <PosRow key={i} x={x} tone="sell" />)}
-      </div>
+      )}
     </div>
   )
 }
