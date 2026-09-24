@@ -72,7 +72,9 @@ h3 { font-size: 13px; margin: 0 0 8px; color: var(--ink-2); font-weight: 600; }
 .g2 { grid-template-columns: repeat(2, 1fr); }
 .g3 { grid-template-columns: repeat(3, 1fr); }
 .g4 { grid-template-columns: repeat(4, 1fr); }
-@media (max-width: 860px) { .g2,.g3,.g4 { grid-template-columns: 1fr; } }
+.g5 { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 1100px) { .g5 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 860px) { .g2,.g3,.g4,.g5 { grid-template-columns: 1fr; } }
 
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
