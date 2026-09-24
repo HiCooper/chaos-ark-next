@@ -638,9 +638,11 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
                 tickets.append(amt)
                 mv_i = shares * (book.close(sid0, k) or px)
                 day_events.append({
-                    "k": "B", "sw": it["sw"], "sid": sid0, "price": round(px, 4),
+                    # 事件精度：price 6 位、amt/sh 10 位 —— verify_ledger 要用它严格重放现金账，
+                    # 6 位小数在"把现金花到接近 0"的建仓上会累积出 ~1e-5 的舍入亏空。
+                    "k": "B", "sw": it["sw"], "sid": sid0, "price": round(px, 6),
                     "h": it["horizon"], "a": it["action"], "sc": round(it["score"], 1),
-                    "w": round(it["w"], 4), "amt": round(amt, 6), "sh": round(shares, 6),
+                    "w": round(it["w"], 4), "amt": round(amt, 10), "sh": round(shares, 10),
                     "w_share": round(mv_i / (cash + sum(
                         x["shares"] * (book.close(x["sid"], k) or x["buy_px"]) for x in holdings)), 5)
                     if (cash + sum(x["shares"] * (book.close(x["sid"], k) or x["buy_px"])
@@ -664,13 +666,13 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
                         sid_block_until[h["sid"]] = k + sid_cooldown
                     day_events.append({
                         "k": "S", "sw": h["sw"], "sid": h["secid"],
-                        "price": round(px, 4), "bd": dates[h["buy_i"]],
-                        "bpx": round(h["buy_px"], 4), "h": h["horizon"], "a": h["action"],
+                        "price": round(px, 6), "bd": dates[h["buy_i"]],
+                        "bpx": round(h["buy_px"], 6), "h": h["horizon"], "a": h["action"],
                         "why": h["reason"], "gross": round(gross, 5) if gross is not None else None,
                         "ret": round(net, 5) if net is not None else None,
                         "ex": round(net - bre, 5) if (net is not None and bre is not None) else None,
-                        "w": round(h["w"], 4), "amt": round(proceeds, 6),
-                        "sh": round(h["shares"], 6),
+                        "w": round(h["w"], 4), "amt": round(proceeds, 10),
+                        "sh": round(h["shares"], 10),
                         "w_share": round(h["shares"] * px / (cash - proceeds + h["shares"] * px), 5)
                         if (cash - proceeds + h["shares"] * px) > 0 else None,
                     })

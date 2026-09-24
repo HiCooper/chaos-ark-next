@@ -53,7 +53,9 @@ import rules as RULES  # noqa: E402
 #       → ark-1.8.0-executable / ark-1.8.1-rp-only-k24（结算层改有限资金池可执行账户；
 #         F5/波动目标停用；K=16→24。见 docs/口径变更-2026-09-23-可执行账户.md）
 #       → ark-1.8.2-cash0-k24（2026-09-23 用户口径：闲置现金**不计息**，原 1.0%/年）
-ENGINE_VERSION = "ark-1.8.2-cash0-k24"
+#       → ark-1.8.3-mature1.0-k24（2026-09-24 回退 mature_weight 0.7→1.0：walk-forward
+#         审计显示 mw=0.7 使 2024–2026 样本外全为负；见 config.CLASSIFY.mature_weight 注释）
+ENGINE_VERSION = "ark-1.8.3-mature1.0-k24"
 
 
 def config_hash() -> str:

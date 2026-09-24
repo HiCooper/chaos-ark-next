@@ -119,7 +119,10 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
     if (!yrRange[y]) yrRange[y] = [i, i]
     yrRange[y][1] = i
   })
+  // 年份页签只保留"真有行情"的年份：曲线的第 0 个点是估值基点（如 2017-12-29 仅 1 天），
+  // 单独成 tab 会点进去看到一条空图。阈值取 20 个交易日（不足一个月的残年同样不列）。
   const yrList = Object.keys(yrRange)
+    .filter((y) => yrRange[y][1] - yrRange[y][0] + 1 >= 20)
   const [year, setYear] = useState<string>(yrList.length ? yrList[yrList.length - 1] : 'all')
 
   const [lo, hi] = year === 'all'

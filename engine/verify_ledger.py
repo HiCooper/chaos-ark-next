@@ -11,8 +11,14 @@
     2) 用事件重建一本现金账：B 事件扣现金加持仓、S 事件加现金平仓、每日现金计息、每日按收盘盯市；
     3) 逐日与发布净值对比；同时断言现金从不为负。
 
-判定：净值最大相对偏差 < 5e-4（事件里的价格/股数是 6 位小数，允许舍入漂移），且现金 ≥ -1e-9。
-任何隐含交易（例如每日再平衡）都会立刻放大成数量级偏差，直接 fail。
+判定：净值最大相对偏差 < 5e-4（事件里的价格/股数是小数截断，允许舍入漂移），
+且现金 ≥ CASH_FLOOR（同理为舍入留的余量）。任何隐含交易（例如每日再平衡）
+都会立刻放大成数量级偏差，直接 fail。
+
+盯市价必须与引擎同规则：`当日收盘价 → 上一有效收盘价 → 买入价`。
+2026-09-24 的失败就是漏了这条回退：医疗ETF华宝(1.512170) 在 2021-02-24 停牌无行情，
+引擎按前收 2.564 盯市，而本脚本只查当日收盘价 → 少算 9.4% 的持仓市值（净值偏差 3.5%），
+次日行情恢复后又自动吻合。**停牌不是"隐含交易"**，校验器必须复现引擎的价格回退链。
 
 用法：python verify_ledger.py  → 打印对账结果，失败返回 1
 """
@@ -27,6 +33,7 @@ import config as C  # noqa: E402
 import pipeline as PL  # noqa: E402  （用生产同款账簿加载器：含 qfq 份额折算复权）
 
 NAV_TOL = 5e-4
+CASH_FLOOR = -1e-6        # 事件里的股数/金额按小数截断，重放现金允许 ~1e-6 级舍入亏空
 
 
 def main() -> int:
@@ -56,6 +63,7 @@ def main() -> int:
     kidx = [book.idx.get(d) for d in dates]
     cash = 1.0                                  # 初始本金（归一化）
     pos: dict[str, float] = {}                  # sid → 股数
+    last_px: dict[str, float] = {}              # sid → 最近一次有效价（收盘 or 买入价）
     worst = 0.0
     worst_d = ""
     min_cash = cash
@@ -67,6 +75,9 @@ def main() -> int:
             if e["k"] == "B":
                 cash -= float(e["amt"])
                 pos[e["sid"]] = pos.get(e["sid"], 0.0) + float(e.get("sh") or 0.0)
+                # 引擎的盯市回退链最后一环是买入价：新持仓当天没有收盘价时用它
+                if not last_px.get(e["sid"]) and e.get("price"):
+                    last_px[e["sid"]] = float(e["price"])
             else:
                 cash += float(e["amt"])
                 pos[e["sid"]] = max(0.0, pos.get(e["sid"], 0.0) - float(e.get("sh") or 0.0))
@@ -75,7 +86,11 @@ def main() -> int:
         for sid, sh in pos.items():
             if sh <= 0:
                 continue
-            px = book.close(sid, k)
+            px = book.close(sid, k)             # 引擎：close or prev_close_cache or buy_px
+            if px:
+                last_px[sid] = px
+            else:
+                px = last_px.get(sid)
             if px:
                 mv += sh * px
         v = cash + mv
@@ -88,10 +103,10 @@ def main() -> int:
             print(f"    [dbg] {d} cash={cash:.4f} mv={mv:.4f} v={v:.4f} nav={nav[i]:.4f} Σsh={sum(pos.values()):.4f}")
 
     ok_nav = worst < NAV_TOL
-    ok_cash = min_cash >= -1e-9
+    ok_cash = min_cash >= CASH_FLOOR
     print(f"  账本重放：逐日净值最大偏差 {worst:.2e}（{worst_d}，阈值 {NAV_TOL:.0e}）"
           f"  {'✓' if ok_nav else '✗'}")
-    print(f"  现金非负：最低现金 {min_cash:.6f}  {'✓' if ok_cash else '✗'}"
+    print(f"  现金非负：最低现金 {min_cash:.3e}（下限 {CASH_FLOOR:.0e}）  {'✓' if ok_cash else '✗'}"
           f"   事件 {len(events)} 条 / {len(dates)} 个交易日")
     if not (ok_nav and ok_cash):
         print("  ✗ 对账失败：净值无法由事件日志重放，说明存在未披露的交易（例如再平衡）")
