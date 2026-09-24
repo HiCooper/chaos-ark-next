@@ -215,7 +215,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
             <div className="grid g5" style={{ margin: '2px 0 12px' }}>
               <Stat k="账户总值" v={yuan(acct.value)}
                 n={`本金 ${yuan(acct.capital)} · 净值 ${num(multi, 3)} · 累计 ${pct(acct.totalPnl / (acct.capital || 1))}`} />
-              <Stat k={`持仓市值（${acct.positions.length} 笔）`} v={yuan(acct.mv)}
+              <Stat k={`持仓市值（${acct.positions.length} 笔 / ${grouped.length} 只 ETF）`} v={yuan(acct.mv)}
                 n={`账户最大回撤 ${pct(acct.maxdd, 1, false)}`} />
               <Stat k="可用现金" v={yuan(acct.cash)}
                 n={`占 ${pct(acct.value > 0 ? acct.cash / acct.value : 0, 1, false)} · `
@@ -399,7 +399,11 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
 
             {/* ============ ③ 当前持仓 ============ */}
             <div className="colhead" style={{ marginBottom: 6 }}>
-              <h2 style={{ fontSize: 15 }}>当前持仓（{acct.positions.length} 笔）</h2>
+              <h2 style={{ fontSize: 15 }}>
+                {byEtf
+                  ? `当前持仓（${grouped.length} 只 ETF / ${acct.positions.length} 笔）`
+                  : `当前持仓（${acct.positions.length} 笔 / ${grouped.length} 只 ETF）`}
+              </h2>
               <span className="n">按 {date} 收盘价盯市 · <b>买入日倒序</b> · 成本 = 买入时实际付出的现金</span>
               <button className="linkbtn" style={{ marginLeft: 'auto' }} onClick={() => setByEtf(!byEtf)}>
                 {byEtf ? '按笔查看' : '按 ETF 汇总'}
