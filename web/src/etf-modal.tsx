@@ -572,7 +572,7 @@ export function EtfModal(props: EtfModalInput) {
         {/* 口径声明：「我的持仓」打开的弹窗按你的入市起始日统计，与复盘页的全历史口径不同 */}
         {data && (scoped || money) && (
           <div className="note" style={{ marginTop: 0, marginBottom: 8 }}>
-            <b>本弹窗按「我的持仓」口径统计</b>：入市起始日 {scope?.from || '数据起点'}
+            <b>「我的持仓」口径统计</b>：入市起始日 {scope?.from || '数据起点'}
             {scope?.capital ? `（本金 ${scope.capital.toLocaleString('zh-CN')} 元）` : ''}
             {scope?.to ? ` → 盯市至 ${scope.to}` : ''}。
             下方 ETF 涨跌、已结算/在途统计、B/S 成交点与账本<b>都只算这本账</b>
