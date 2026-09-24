@@ -106,6 +106,7 @@ export type SellPlanRow = {
 }
 
 export type SimResult = {
+  /** 入市起始日（= 顺延后的交易日；本金在该日收盘入账，下一交易日开盘首次建仓） */
   startDate: string
   asOf: string
   asOfI: number
@@ -196,15 +197,20 @@ export function runSim(
 
   // 起始日：非交易日顺延到下一个交易日（与引擎同规则，绝不静默退回全历史）
   let sI = 0
+  let beyondData = false          // 起始日晚于全部数据 → 这本账还没开始
   if (opts.startDate) {
     const hit = idxOf[opts.startDate]
     if (hit !== undefined) sI = hit
     else {
       const nxt = dates.findIndex((d) => d >= (opts.startDate as string))
-      sI = nxt >= 0 ? nxt : dates.length - 1
+      if (nxt >= 0) sI = nxt
+      else { sI = dates.length - 1; beyondData = true }
     }
   }
-  const startK = Math.max(sI, 1)
+  // 入市起始日 = dates[sI]（顺延后的交易日）：本金在该日**收盘**入账，同日收盘的结论
+  // 在**下一交易日开盘**建仓（与全系统的 T 收盘出结论 → T+1 开盘买入一致）。
+  // 所以第一个可能建仓的交易日是 sI+1；曲线基点也落在起始日本身，不再多出前一日。
+  const firstK = beyondData ? dates.length : Math.max(sI, 0) + 1
   let asOfI = dates.length - 1
   if (opts.asOf && idxOf[opts.asOf] !== undefined) asOfI = idxOf[opts.asOf]
 
@@ -221,7 +227,7 @@ export function runSim(
   let cash = capital
   let holdings: Position[] = []
   const window: { d: string; v: number }[] = [
-    { d: dates[Math.max(0, startK - 1)], v: capital },
+    { d: dates[Math.max(0, sI)], v: capital },
   ]
   // 只保留**选中日当天**的成交（逐日重置，避免把整段重放的成交都堆在这里）
   let todayBuys: Position[] = []
@@ -234,7 +240,7 @@ export function runSim(
   let todaySignalDate: string | null = null
   let todayCands = 0, todaySlotsFree = 0
 
-  for (let k = startK; k <= asOfI; k++) {
+  for (let k = firstK; k <= asOfI; k++) {
     const d = dates[k]
     todayBuys = []
     todaySells = []
@@ -434,7 +440,8 @@ export function runSim(
   }
 
   return {
-    startDate: dates[Math.max(0, startK - 1)], asOf: dates[asOfI], asOfI,
+    startDate: beyondData ? (opts.startDate as string) : dates[Math.max(0, sI)],
+    asOf: dates[asOfI], asOfI,
     nextDate, nextDateEstimated, window,
     capital, cash, mv, value, totalPnl: value - capital,
     floatPnl: mv - holdings.reduce((a, h) => a + h.amt, 0),
@@ -489,6 +496,9 @@ export type BookEvent = {
   /** S：已实现盈亏（元，已扣双边成本） */
   pnl?: number
   why?: string
+  /** B：到期日（未平仓行用它显示"还没卖、什么时候卖"）；endEst = 推算（数据末端之外） */
+  end?: string | null
+  endEst?: boolean
 }
 
 export function bookEvents(acct: SimResult, sid: string): BookEvent[] {
@@ -498,7 +508,7 @@ export function bookEvents(acct: SimResult, sid: string): BookEvent[] {
     out.push({
       k: 'B', date: b.buyDate, sw: b.sw, sid: b.sid, price: b.buyPx,
       h: b.horizon, a: b.action, sc: b.score, w: b.w, w_share: b.wShare,
-      amt: b.amt, sh: b.shares,
+      amt: b.amt, sh: b.shares, end: b.endDate, endEst: b.endEstimated,
     })
   }
   for (const s of acct.sells) {

@@ -660,6 +660,9 @@ td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3);
 .etf-stats .estat .v.down { color: var(--down, #1b8a4b); }
 .etf-stats .estat .m { font-size: 11px; color: var(--ink-3, #8b94a3); }
 
+/* 账本明细里的「在途」行（已买入、还没卖出）：浅底区分，一眼看出哪些还没了结 */
+.modal tr.ledger-open td { background: rgba(31, 58, 138, 0.045); }
+
 /* ---------- 「我的持仓」顶部操作条：先回答"今天买什么、卖什么" ---------- */
 .opbar {
   display: flex; flex-wrap: wrap; gap: 10px;

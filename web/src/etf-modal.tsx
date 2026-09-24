@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as echarts from 'echarts/core'
-import { num, pct } from './ui'
-import { yuan, yuanSigned } from './sim'
+import { num, pct, Chip } from './ui'
+import { yuan, yuanSigned, addWeekdays } from './sim'
 
 /**
  * 标的走势核验弹窗：点「可交易标的」或折算样本弹出。
@@ -55,6 +55,9 @@ export type SidEvent = {
   proceeds?: number
   sh?: number
   pnl?: number
+  /** B：到期日（未平仓行显示"还没卖、什么时候卖"）；endEst = 按周末推算（未计节假日） */
+  end?: string | null
+  endEst?: boolean
 }
 
 /**
@@ -105,22 +108,56 @@ type EtfSeries = {
 const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
 const REF_TXT: Record<string, string> = { index: '行业指数', median: '全池中位数' }
 
-/** 该标的的成交配对表：一行 = 一笔完整交易（以 S 事件为准） */
-function pairTrades(events: SidEvent[]) {
-  return events
+/** 账本明细的一行：open=false 为已结算（有 S），open=true 为在途（只有 B） */
+type LedgerRow = {
+  open: boolean
+  buyDate: string
+  sellDate?: string
+  bpx: number | null
+  spx: number | null
+  gross: number | null
+  /** 结算层净收益率（已扣双边成本）；在途行为 null */
+  ret: number | null
+  grossEv: number | null
+  why?: string
+  wBuy?: number
+  wSell?: number
+  act?: string
+  shBuy: number | null
+  amtBuy: number | null
+  /** 卖出金额（在途行 = 按估值价的市值） */
+  proceeds: number | null
+  /** 已实现盈亏（元，仅本账户口径的已结算行） */
+  pnl: number | null
+  /** 浮动盈亏（元，仅在途行；本账户口径为真钱） */
+  floatPnl: number | null
+  floatPct: number | null
+  endDate: string | null
+  endEst: boolean
+}
+
+/**
+ * 该标的的成交配对表（已结算行）：一行 = 一笔完整交易（以 S 事件为准）。
+ *
+ * 还没卖出的 B 点由 openRowsOf() 生成，两者合并成"账本明细"——每一笔买入都要看得见，
+ * 无论它的结局是卖出还是仍在途。
+ */
+function pairTrades(events: SidEvent[]): LedgerRow[] {
+  const settled: LedgerRow[] = events
     .filter((e) => e.k === 'S' && e.bd)
     .map((s) => {
       const b = events.find((e) => e.k === 'B' && e.sid === s.sid && e.date === s.bd)
-      const bpx = s.bpx ?? b?.price
-      const spx = s.price
+      const bpx = s.bpx ?? b?.price ?? null
+      const spx = s.price ?? null
       const gross = spx != null && bpx ? spx / bpx - 1 : null
       return {
-        buyDate: s.bd!,
-        sellDate: s.date!,
+        open: false,
+        buyDate: s.bd as string,
+        sellDate: s.date,
         bpx,
         spx,
         gross,
-        ret: s.ret,
+        ret: s.ret ?? null,
         grossEv: s.gross ?? null,
         why: s.why,
         wBuy: b?.w,
@@ -131,9 +168,48 @@ function pairTrades(events: SidEvent[]) {
         amtBuy: b?.amt ?? null,
         proceeds: s.proceeds ?? null,
         pnl: s.pnl ?? null,
+        floatPnl: null,
+        floatPct: null,
+        endDate: null,
+        endEst: false,
       }
     })
-    .sort((a, b) => b.buyDate.localeCompare(a.buyDate)) // 买入日倒序：最近的交易排最前
+  return settled.sort((a, b) => b.buyDate.localeCompare(a.buyDate)) // 买入日倒序
+}
+
+/** 在途 B 点（有 B 无 S）→ 账本明细行；估值价由调用方给（窗口末端的复权价） */
+function openRowsOf(events: SidEvent[], px: number | null, money: boolean): LedgerRow[] {
+  if (px == null) return []
+  const soldBd = new Set(events.filter((e) => e.k === 'S' && e.bd).map((e) => e.bd))
+  return events
+    .filter((e) => e.k === 'B' && e.date && !soldBd.has(e.date) && e.price)
+    .map((e) => {
+      const bpx = e.price as number
+      const gross = px / bpx - 1
+      const amtBuy = money ? (e.amt ?? null) : NOTIONAL
+      const shBuy = money ? (e.sh ?? null) : NOTIONAL / bpx
+      const mv = shBuy != null ? shBuy * px : null
+      return {
+        open: true,
+        buyDate: e.date as string,
+        bpx,
+        spx: px,
+        gross,
+        ret: null,
+        grossEv: null,
+        why: undefined,
+        wBuy: e.w,
+        act: e.a,
+        shBuy,
+        amtBuy,
+        proceeds: mv,
+        pnl: null,
+        floatPnl: mv != null && amtBuy != null ? mv - amtBuy : null,
+        floatPct: gross,
+        endDate: e.end ?? null,
+        endEst: !!e.endEst,
+      }
+    })
 }
 
 /** 序列首末非空值的累计涨跌幅；给了窗口只算窗口内（起点取 ≥from 的首个有效值） */
@@ -221,7 +297,7 @@ export function EtfModal(props: EtfModalInput) {
     return null
   }, [data, scoped, scope?.from, scope?.to])
 
-  // 在途持仓：B 事件没有任何 S 事件与之配对（S.bd = 买入日）。聚合为一张卡展示。
+  // 在途持仓：B 事件没有任何 S 事件与之配对（S.bd = 买入日）。聚合为一张卡，也进账本明细。
   const openPos = useMemo(() => {
     const soldBd = new Set(winEvents.filter((e) => e.k === 'S').map((e) => e.bd))
     return winEvents.filter((e) => e.k === 'B' && e.date && !soldBd.has(e.date))
@@ -253,6 +329,31 @@ export function EtfModal(props: EtfModalInput) {
       to: dates[dates.length - 1],
     }
   }, [openPos, lastAdj, money])
+
+  // 账本明细 = 已结算行 + **在途行**（还没卖出的 B 点也要看得见），统一按买入日倒序。
+  // 在途行的估值价取窗口末端复权价；引擎口径下没有 end 字段时，用交易日历按 H 推算到期日。
+  const ledger = useMemo(() => {
+    const openRows = openRowsOf(winEvents, lastAdj?.v ?? null, money)
+    if (!money) {
+      // 引擎事件不带到期日：买入日索引 + 建议周期 = 到期交易日（与结算层 end = buy_i + H 一致）；
+      // 落在数据末端之外时按周末推算（标 ~，与「我的持仓」的到期日同一算法）
+      const cal = new Map<string, number>()
+      curveDates.forEach((d, i) => cal.set(d, i))
+      for (const r of openRows) {
+        const ev = winEvents.find((e) => e.k === 'B' && e.date === r.buyDate)
+        const i = cal.get(r.buyDate)
+        if (!ev?.h || i == null) continue
+        const j = i + ev.h
+        if (j < curveDates.length) r.endDate = curveDates[j]
+        else {
+          r.endDate = addWeekdays(curveDates[curveDates.length - 1], j - (curveDates.length - 1))
+          r.endEst = true
+        }
+      }
+    }
+    return [...trades, ...openRows]
+      .sort((a, b) => (a.buyDate === b.buyDate ? 0 : (a.buyDate < b.buyDate ? 1 : -1)))
+  }, [trades, winEvents, lastAdj, money, curveDates])
 
   // ETF 自身累计涨跌（复权口径）：引擎页 = 数据起点 → 最新；账户页 = 入市起始日 → 选中日
   const etfTotal = useMemo(
@@ -551,12 +652,12 @@ export function EtfModal(props: EtfModalInput) {
                     <th style={{ textAlign: 'right' }}>毛收益率</th>
                     <th style={{ textAlign: 'right' }}>成本</th>
                     <th style={{ textAlign: 'right' }}>净收益率</th>
-                    <th style={{ textAlign: 'right' }}>{money ? '已实现盈亏' : '结算 ret 对账'}</th>
+                    <th style={{ textAlign: 'right' }}>{money ? '已实现 / 浮动盈亏' : 'ret 对账 / 浮动'}</th>
                     <th>卖出原因</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.map((t, i) => {
+                  {ledger.map((t, i) => {
                     // 名义账本（引擎）：每笔固定 1 万元本金；本账户：用真实成交份数与金额
                     const shares = money ? t.shBuy : (t.bpx ? NOTIONAL / t.bpx : null)
                     const sellAmt = money
@@ -564,8 +665,13 @@ export function EtfModal(props: EtfModalInput) {
                       : (shares != null && t.spx != null ? shares * t.spx : null)
                     const net = t.gross != null ? t.gross - COST_RT : null
                     const chk = net != null && t.ret != null ? Math.abs(net - t.ret) : null
+                    // 在途行：卖出日/价/金额都是「按窗口末端收盘价估值」的假想值，逐格标注
+                    const est = (
+                      <span className="muted" style={{ fontSize: 10, marginLeft: 3 }}
+                            title={`按 ${lastAdj?.d} 收盘价估值，不是成交价`}>估</span>
+                    )
                     return (
-                      <tr key={i}>
+                      <tr key={i} className={t.open ? 'ledger-open' : ''}>
                         <td className="num">{t.buyDate}</td>
                         <td className="num" style={{ textAlign: 'right' }}>{num(t.bpx, 4)}</td>
                         <td className="num" style={{ textAlign: 'right' }}>{shares != null ? num(shares, 2) : '—'}</td>
@@ -574,19 +680,36 @@ export function EtfModal(props: EtfModalInput) {
                             {t.amtBuy != null ? yuan(t.amtBuy) : '—'}
                           </td>
                         )}
-                        <td className="num">{t.sellDate}</td>
-                        <td className="num" style={{ textAlign: 'right' }}>{num(t.spx, 4)}</td>
-                        <td className="num" style={{ textAlign: 'right' }}>{sellAmt != null ? sellAmt.toFixed(2) : '—'}</td>
+                        <td className="num">
+                          {t.open
+                            ? <Chip tone="mute" title={`未平仓：到期日约 ${t.endDate || '—'}${t.endEst ? '（按周末推算，未计节假日）' : ''}`}>在途</Chip>
+                            : t.sellDate}
+                        </td>
+                        <td className="num" style={{ textAlign: 'right' }}>
+                          {num(t.spx, 4)}{t.open && est}
+                        </td>
+                        <td className="num" style={{ textAlign: 'right' }}>
+                          {sellAmt != null ? sellAmt.toFixed(2) : '—'}{t.open && est}
+                        </td>
                         <td className="num" style={{ textAlign: 'right', color: (t.gross ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
-                          {pct(t.gross, 2)}
+                          {pct(t.gross, 2)}{t.open && <span className="muted" style={{ fontSize: 10, marginLeft: 3 }}>浮动</span>}
                         </td>
-                        <td className="num" style={{ textAlign: 'right' }}>-0.14%</td>
-                        <td className="num" style={{ textAlign: 'right', color: (net ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
-                          {pct(net, 2)}
+                        <td className="num" style={{ textAlign: 'right' }}>{t.open ? '—' : '-0.14%'}</td>
+                        <td className="num" style={{ textAlign: 'right', color: t.open ? 'inherit' : ((net ?? 0) >= 0 ? 'var(--up)' : 'var(--down)') }}>
+                          {t.open ? '—' : pct(net, 2)}
                         </td>
-                        <td className={`num ${money ? (t.pnl ?? 0) >= 0 ? 'up' : 'down' : ''}`}
+                        <td className={`num ${(t.open ? t.floatPnl : money ? t.pnl : t.ret) != null
+                          ? ((t.open ? t.floatPnl : money ? t.pnl : t.ret) as number) >= 0 ? 'up' : 'down' : ''}`}
                             style={{ textAlign: 'right' }}>
-                          {money ? (
+                          {t.open ? (
+                            // 在途行没有已实现盈亏：给"按当前价的浮动盈亏"，金额与比例都标出来
+                            <span title={`未平仓，按 ${lastAdj?.d} 收盘价估值，未扣卖出成本`}>
+                              <b>{money
+                                ? (t.floatPnl != null ? yuanSigned(t.floatPnl) : '—')
+                                : (t.gross != null ? `${t.gross >= 0 ? '+' : '−'}¥${Math.abs(t.gross * NOTIONAL).toFixed(0)}` : '—')}</b>
+                              <span className="muted" style={{ fontSize: 10, marginLeft: 4 }}>浮动</span>
+                            </span>
+                          ) : money ? (
                             <b>{t.pnl != null ? yuanSigned(t.pnl) : '—'}</b>
                           ) : (
                             <>
@@ -600,16 +723,20 @@ export function EtfModal(props: EtfModalInput) {
                             </>
                           )}
                         </td>
-                        <td className="muted" style={{ fontSize: 11.5 }}>{t.why || '—'}</td>
+                        <td className="muted" style={{ fontSize: 11.5 }}>
+                          {t.open
+                            ? `未平仓 · 到期日 ${t.endEst ? '~' : ''}${t.endDate || '—'}`
+                            : (t.why || '—')}
+                        </td>
                       </tr>
                     )
                   })}
-                  {!trades.length && (
+                  {!ledger.length && (
                     <tr>
                       <td colSpan={money ? 12 : 11} className="muted">
                         {money
-                          ? '这本账在该标的上没有已完成的成交（可能有在途持仓，或你还没跟到它的买点）'
-                          : '该标的在结算区间内没有已完成的成交（可能有在途持仓）'}
+                          ? '这本账在该标的上没有任何成交（你还没跟到它的买点）'
+                          : '该标的在结算区间内没有任何成交'}
                       </td>
                     </tr>
                   )}
@@ -619,10 +746,15 @@ export function EtfModal(props: EtfModalInput) {
             {money ? (
               <div className="note" style={{ marginTop: 8 }}>
                 * 价格为<b>复权连续价</b>（结算取价口径）。份额折算日之后，复权价 = 原始市价 × 折算因子；
-                与行情软件核对请看图中灰色虚线（原始市价）。本表是<b>这本账的真实成交</b>：
+                与行情软件核对请看图中灰色虚线（原始市价）。本表是<b>这本账的全部买入</b>，每笔一行：
                 买入金额 = 建仓时实际付出的现金（= min(预算, 可用现金)，受你的本金与入市起始日约束），
                 卖出金额 = 份数 × 到期日收盘价 − 双边成本；
                 净收益率 = 毛收益率 − 0.14%，<b>已实现盈亏 = 卖出金额 − 买入金额</b>（真钱，单位：元）。
+                <br />
+                <b>「在途」行 = 已经买入、还没卖出的持仓</b>（到建议周期结束才卖）：
+                卖出日一栏是到期日，卖出价/卖出金额/毛收益率都打「估」字——
+                按 {lastAdj?.d} 收盘价估的值，不是成交；成本与净收益率留空，最后一列给的是
+                <b>浮动盈亏</b>（未扣卖出成本），与上方「本账户在途持仓」卡一致。
               </div>
             ) : (
               <div className="note" style={{ marginTop: 8 }}>
@@ -631,6 +763,10 @@ export function EtfModal(props: EtfModalInput) {
                 份额 = 本金 ÷ 买入价 → 卖出金额 = 份额 × 卖出价；毛收益率 = 卖出价 ÷ 买入价 − 1；
                 成本 0.14% = 双边佣金万二 + 双边滑点万五；净收益率 = 毛收益率 − 0.14%，
                 <b>「结算 ret 对账」列应与净收益率逐位一致（✓）</b>——这一列就是"钱算得对不对"的直接检验。
+                <br />
+                <b>「在途」行 = 已建仓、还没到期的买入</b>（结算层还没产生 S 事件）：
+                卖出日/价/金额按 {lastAdj?.d} 收盘价估值（打「估」字），最后一列是名义浮动盈亏；
+                它不出现在上面的「系统已结算」统计里。
               </div>
             )}
           </>
