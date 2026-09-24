@@ -495,7 +495,8 @@ def main():
     rt_fill = None
     try:
         with open(f"{C.CACHE_DIR}/panel.json", "r", encoding="utf-8") as _f:
-            rt_fill = (json.load(_f) or {}).get("realtime_fill")
+            _panel = json.load(_f) or {}
+            rt_fill = _panel.get("tail_fill") or _panel.get("realtime_fill")
     except Exception:
         rt_fill = None
     est_days = set(((rt_fill or {}).get("days") or {}).keys())
@@ -508,7 +509,7 @@ def main():
     for d in write_dates:
         _pl = day_payload(conclusions[d], exits_by_date.get(d))
         if rt_fill and d in est_days:
-            _pl["realtime_fill"] = rt_fill
+            _pl["tail_fill"] = rt_fill
         json.dump(_pl, open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
     print(f"      day/<date>.json：重写 {len(write_dates)} / 共 {len(dates)}"
           f"（复用 {n_reused} 天缓存，其中 {n_exit_days} 日有在场持仓）")
@@ -522,7 +523,7 @@ def main():
               f"在场持仓 {at['n_open']} 笔（平均持有 {at['avg_held']} 个交易日），"
               f"失效预警 {at['n_warn']} 笔")
     if rt_fill:
-        today["realtime_fill"] = rt_fill
+        today["tail_fill"] = rt_fill
     json.dump(today, open(f"{C.OUT_DIR}/today.json", "w"), ensure_ascii=False)
     print("      " + today.get("summary", ""))
 

@@ -77,3 +77,21 @@ export function Card(props: { title?: string; extra?: React.ReactNode; children:
     </div>
   )
 }
+
+/** 数据兜底提示条：申万官方日线滞后时，本轮结论用了哪种兜底数据。 */
+export function DataFillBar({ fill, style }: { fill: any; style?: React.CSSProperties }) {
+  if (!fill || !fill.days) return null
+  const days = Object.keys(fill.days)
+  const method: string = fill.method || 'realtime'
+  const cls = method === 'etf_proxy' ? 'warnbar' : 'warnbar'
+  return (
+    <div className={cls} style={style}>
+      <b>数据含兜底日</b>（{days.join('、')}）：申万官方日线尚未发布（停在 {fill.official_last}），
+      {method === 'etf_proxy'
+        ? <>本轮用<b>对应 ETF 的日收益前推</b>行业指数——收益口径真实、点位为推算，量额为估算。</>
+        : <>本轮收盘价取自申万<b>实时行情</b>（真值），量额为估算。</>}
+      实测兜底代价：单日点位误差中位 ≤0.7%、5 日累计收益偏差中位 ≈0.2%，方向判断不受影响；
+      官方出数后重跑 <code>python3 engine/ark.py daily</code> 会自动用真值覆盖并做盘前复核。
+    </div>
+  )
+}

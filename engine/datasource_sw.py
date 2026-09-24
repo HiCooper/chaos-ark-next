@@ -283,15 +283,16 @@ def fill_realtime_tail(series: Dict[str, Dict[str, dict]],
     if not tail:
         return None
     if len(tail) > RT_FILL_MAX_DAYS:
+        # 实时行情只有「昨收 + 当日 bar」，覆盖不了多日缺口 → 交给 ETF 收益代理路径
         if verbose:
-            print(f"  [realtime] 官方滞后 {len(tail)} 天（上限 {RT_FILL_MAX_DAYS}），"
-                  f"更早的日子没有可用的昨收，放弃兜底：{tail}")
-        return None
+            print(f"  [realtime] 官方滞后 {len(tail)} 天 > {RT_FILL_MAX_DAYS}，"
+                  f"实时行情不够用，改走 ETF 收益代理")
+        return _fill_by_etf_proxy(series, bench_series, meta, official_last, tail, verbose=verbose)
     rt = fetch_sw_realtime()
     if not rt:
         if verbose:
-            print("  [realtime] 实时行情不可用，放弃兜底")
-        return None
+            print("  [realtime] 实时行情不可用，改走 ETF 收益代理")
+        return _fill_by_etf_proxy(series, bench_series, meta, official_last, tail, verbose=verbose)
     today = time.strftime("%Y-%m-%d", now)
     after_close = (now.tm_hour, now.tm_min) >= (15, 5)
     day_plan = [{"date": d, "is_current": (d == today and after_close),
@@ -364,8 +365,9 @@ def fill_realtime_tail(series: Dict[str, Dict[str, dict]],
     if bench_win is not None and abs(sw_med - bench_win) > 0.05:
         if verbose:
             print(f"  [realtime] 对齐体检不通过：补出的行业指数中位涨跌 {sw_med:+.2%} vs "
-                  f"基准同窗口 {bench_win:+.2%}（差 {abs(sw_med - bench_win):.1%}）→ 放弃兜底")
-        return None
+                  f"基准同窗口 {bench_win:+.2%}（差 {abs(sw_med - bench_win):.1%}）"
+                  f"→ 实时口径不可信，改走 ETF 收益代理")
+        return _fill_by_etf_proxy(series, bench_series, meta, official_last, tail, verbose=verbose)
     # 落 L0（overwrite_est：官方出数后自动覆盖）
     for code, rows in filled_rows.items():
         RS.put("sw_index", code, rows, SOURCE_SW_RT, merge=True, overwrite_est=True,
@@ -374,10 +376,12 @@ def fill_realtime_tail(series: Dict[str, Dict[str, dict]],
             series[code][r["date"]] = r
         series[code] = dict(sorted(series[code].items()))
     report = {
+        "method": "realtime",
         "days": {p["date"]: {
             "close": "realtime(完整bar)" if p["is_current"] else "realtime(昨收)",
             "volume": "est(沪深300量比)" if p["ratio"] != 1.0 else "est(沿用前值)",
             "ohlc": "realtime" if p["is_current"] else "est(=收盘)",
+            "method": "realtime",
         } for p in day_plan},
         "codes": len(filled_rows),
         "codes_estimated": n_est,
@@ -392,6 +396,158 @@ def fill_realtime_tail(series: Dict[str, Dict[str, dict]],
         print(f"  [realtime] 官方停在 {official_last}，已用实时行情兜底 {len(tail)} 天：{days_txt}")
         print(f"             量额按沪深300量比估算；对齐体检 行业中位 {sw_med:+.2%} vs "
               f"基准 {bench_win:+.2%} ✓" if bench_win is not None else "             量额按沪深300量比估算")
+        print("             官方出数后重跑 daily 会自动用真值覆盖（L0 overwrite_est=True）")
+    return report
+
+
+def _raw_etf_bars(sid: str) -> Dict[str, dict]:
+    """原始 ETF 日线（data/raw/etf/<sid>.json）——L0 是及时的（新浪），且早于申万官方。"""
+    recs = RS.get("etf", sid) or []
+    return {r["date"]: r for r in recs if r.get("close")}
+
+
+def _etf_proxy_returns(sw_to_etf: Dict[str, str], name: str, dates: List[str],
+                       verbose: bool = True) -> Optional[Dict[str, tuple]]:
+    """用该行业对应 ETF 的日收益，代理行业指数在缺口期的日收益。
+
+    只补**收益**、不编造点位：把 ETF 的日收益率链式乘到「最后一个官方收盘价」上。
+    返回 {date: (ret, vol_ratio, clamped)}；拿不到 ETF 返回 None。
+    """
+    sid = sw_to_etf.get(name)
+    if not sid:
+        return None
+    bars = _raw_etf_bars(sid)
+    if not bars:
+        return None
+    ks = sorted(bars)
+    out: Dict[str, tuple] = {}
+    for d in dates:
+        prev = [x for x in ks if x < d]
+        if d not in bars or not prev:
+            return None
+        p0, p1 = bars[prev[-1]]["close"], bars[d]["close"]
+        if not p0 or not p1:
+            return None
+        ret = p1 / p0 - 1.0
+        clamped = abs(ret) > 0.11          # 单日 ±11% 之外视为异常（份额折算/数据错），夹住并标记
+        ret = max(-0.11, min(0.11, ret))
+        v0, v1 = bars[prev[-1]].get("volume"), bars[d].get("volume")
+        vr = (float(v1) / float(v0)) if (v0 and v1) else None
+        out[d] = (ret, vr, clamped)
+    return out
+
+
+def _fill_by_etf_proxy(series: Dict[str, Dict[str, dict]],
+                       bench_series: Dict[str, Dict[str, dict]],
+                       meta: Dict[str, dict], official_last: str, tail: List[str],
+                       verbose: bool = True) -> Optional[dict]:
+    """缺口 > 实时行情能覆盖的天数时，用各行业 ETF 的日收益前推补齐（任意长度缺口）。
+
+    与实时路径同一约定：逐行打 `est`、L0 写入 overwrite_est=True（官方出数后自动覆盖）、
+    量额估算、末尾做对齐体检。ETF 数据本身是及时的（新浪），因此这条链路不受申万滞后影响；
+    代价是：ETF 有折溢价/跟踪误差/份额折算，代理期的**行业点位是推算的**（收益口径仍真实）。
+    """
+    try:
+        import json as _json
+        ep = _json.load(open(f"{C.CACHE_DIR}/etf_panel.json", encoding="utf-8"))
+        sw_to_etf = ep.get("sw_to_etf") or {}
+    except Exception:
+        sw_to_etf = {}
+    if not sw_to_etf:
+        return None
+    filled: Dict[str, List[dict]] = {}
+    n_est = n_xs = 0
+    for code, s in series.items():
+        if meta.get(code, {}).get("level") not in ("L1", "L2"):
+            continue
+        if max(s) != official_last:
+            continue
+        name = meta[code]["name"]
+        proxy = _etf_proxy_returns(sw_to_etf, name, tail, verbose=verbose)
+        base = s[official_last]
+        b0 = float(base["close"])
+        v0, a0 = float(base.get("volume") or 0.0), float(base.get("amount") or 0.0)
+        rows: List[dict] = []
+        if proxy:
+            cur = b0
+            for i, d in enumerate(tail):
+                ret, vr, clamped = proxy[d]
+                cur = cur * (1.0 + ret)
+                ratio = _bench_vol_ratio(bench_series, official_last, d) or 1.0
+                est = ["close_proxy", "open", "high", "low", "volume", "amount"]
+                if clamped:
+                    est.append("clamped_11pct")
+                rows.append({"date": d, "open": cur, "high": cur, "low": cur, "close": cur,
+                             "volume": v0 * (vr or ratio), "amount": a0 * (vr or ratio),
+                             "est": est, "src": "etf_proxy"})
+                n_est += 1
+        else:
+            # 无对应 ETF 的行业：用当日全体被代理行业的横截面中位收益推算
+            rows = []
+        if rows:
+            filled[code] = rows
+    if not filled:
+        return None
+    # 无 ETF 的行业 → 横截面中位收益
+    for code, s in series.items():
+        if meta.get(code, {}).get("level") not in ("L1", "L2") or code in filled:
+            continue
+        if max(s) != official_last:
+            continue
+        base = s[official_last]
+        b0 = float(base["close"])
+        v0, a0 = float(base.get("volume") or 0.0), float(base.get("amount") or 0.0)
+        rows = []
+        cur = b0
+        for d in tail:
+            rr = sorted((1.0 + filled[c][i]["close"] / float(series[c][official_last]["close"]) - 1.0)
+                        for c in filled for i, x in enumerate(filled[c]) if x["date"] == d)
+            med = rr[len(rr) // 2] if rr else 1.0
+            day_ret = cur * med / cur - 1.0 if cur else 0.0
+            cur = cur * (1.0 + day_ret)
+            ratio = _bench_vol_ratio(bench_series, official_last, d) or 1.0
+            rows.append({"date": d, "open": cur, "high": cur, "low": cur, "close": cur,
+                         "volume": v0 * ratio, "amount": a0 * ratio,
+                         "est": ["close_xs_median", "open", "high", "low", "volume", "amount"],
+                         "src": "etf_proxy_xs"})
+            n_xs += 1
+        if rows:
+            filled[code] = rows
+    # 对齐体检：补出的行业中位涨跌 vs 基准同窗口
+    last = tail[-1]
+    sw_rets = sorted(filled[c][-1]["close"] / float(series[c][official_last]["close"]) - 1.0
+                     for c in filled)
+    sw_med = sw_rets[len(sw_rets) // 2] if sw_rets else 0.0
+    st = bench_series.get("1.000300") or bench_series.get("1.000001") or {}
+    b0, b1 = st.get(official_last), st.get(last)
+    bench_win = (float(b1["close"]) / float(b0["close"]) - 1.0) if (b0 and b1) else None
+    if bench_win is not None and abs(sw_med - bench_win) > 0.05:
+        if verbose:
+            print(f"  [etf_proxy] 对齐体检不通过：代理行业中位涨跌 {sw_med:+.2%} vs 基准 {bench_win:+.2%}"
+                  f"（差 {abs(sw_med - bench_win):.1%}）→ 放弃兜底")
+        return None
+    for code, rows in filled.items():
+        RS.put("sw_index", code, rows, SOURCE_SW_RT, merge=True, overwrite_est=True,
+               note="申万官方滞后时的 ETF 收益代理兜底（见 docs/数据兜底-实时行情补尾部.md）")
+        for r in rows:
+            series[code][r["date"]] = r
+        series[code] = dict(sorted(series[code].items()))
+    report = {
+        "method": "etf_proxy",
+        "days": {d: {"close": "etf_proxy(ETF 日收益前推)", "volume": "est(该 ETF 量比/沪深300量比)",
+                     "ohlc": "est(=收盘)", "method": "etf_proxy"} for d in tail},
+        "codes": len(filled), "codes_estimated": n_est + n_xs,
+        "official_last": official_last,
+        "align_check": {"sw_median_ret": round(sw_med, 5),
+                        "bench_ret": round(bench_win, 5) if bench_win is not None else None},
+        "source": "新浪 ETF 日线（data/raw/etf）",
+    }
+    if verbose:
+        print(f"  [etf_proxy] 官方停在 {official_last}，缺口 {len(tail)} 天，用 {len(filled)} 个行业的 ETF "
+              f"日收益前推补齐：{'、'.join(tail)}")
+        _bt = f"{bench_win:+.2%}" if bench_win is not None else "—"
+        print(f"             其中 {n_xs} 行（无 ETF 行业）用横截面中位收益；"
+              f"对齐体检 行业中位 {sw_med:+.2%} vs 基准 {_bt} ✓")
         print("             官方出数后重跑 daily 会自动用真值覆盖（L0 overwrite_est=True）")
     return report
 
@@ -429,7 +585,8 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
     if verbose and missing:
         print(f"  [warn] 抓取失败 {len(missing)} 个: {missing[:8]}")
 
-    # 官方申万日线滞后于基准（新浪）时，用实时行情补尾部（估算字段带 est 标记）
+    # 官方申万日线滞后于基准（新浪）时补尾部：≤2 天用实时行情、更长用 ETF 收益代理
+    # （估算字段逐行带 est 标记，官方出数后 L0 overwrite_est 自动覆盖）
     rt_fill = fill_realtime_tail(series, bench_series, meta, verbose=verbose)
 
     # 交易日轴：L1 全体指数日期的并集（申万官方同一日历，取并集防个别指数缺失）
@@ -444,7 +601,7 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
         "dates": dates,
         "meta": meta,
         "series": series,
-        "realtime_fill": rt_fill,
+        "tail_fill": rt_fill,
     }
     os.makedirs(C.CACHE_DIR, exist_ok=True)
     with open(f"{C.CACHE_DIR}/panel.json", "w", encoding="utf-8") as f:

@@ -151,9 +151,11 @@ def water_level() -> dict:
                             "last": lasts[-1] if lasts else None}
 
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
-    if panel and panel.get("realtime_fill"):
-        lv["L0_realtime_fill"] = {"last": max((panel["realtime_fill"].get("days") or {"": None})),
-                                  "days": list((panel["realtime_fill"].get("days") or {}).keys())}
+    _fill = (panel or {}).get("tail_fill") or (panel or {}).get("realtime_fill")
+    if _fill:
+        lv["L0_realtime_fill"] = {"last": max((_fill.get("days") or {"": None})),
+                                  "days": list((_fill.get("days") or {}).keys()),
+                                  "method": _fill.get("method")}
     lv["L1_panel"] = ({"last": panel["dates"][-1], "days": len(panel["dates"]),
                        "targets": len(panel["series"]),
                        "generated_at": panel.get("generated_at")} if panel else None)
@@ -229,9 +231,12 @@ def cmd_status() -> int:
         print("    排查顺序：L0 抓取是否成功 → panel/etf_panel 是否重建 → pipeline 是否带 --refresh")
     rf = lv.get("L0_realtime_fill")
     if rf:
-        print(f"\n  ⚠ 含实时兜底日：{rf['days']}（官方申万日线停在 "
-              f"{(panel := _jload(os.path.join(ROOT, 'cache', 'panel.json'))) and panel.get('realtime_fill', {}).get('official_last')}）"
-              "——收盘价取自申万实时行情、成交量/成交额为估算；")
+        _m = rf.get("method") or "realtime"
+        _src = ("收盘价取自申万实时行情（真值）" if _m == "realtime"
+                else "收盘价由对应 ETF 日收益前推（代理；收益口径真实，点位为推算）")
+        print(f"\n  ⚠ 含兜底日：{rf['days']}（官方申万日线停在 "
+              f"{(panel := _jload(os.path.join(ROOT, 'cache', 'panel.json'))) and (panel.get('tail_fill') or {}).get('official_last')}，"
+              f"方式 {_m}）——{_src}、量额为估算；")
         print("    官方出数后重跑 ark.py daily 会自动用真值覆盖（L0 overwrite_est）")
     sync = lv.get("site_synced") or {}
     bad = [k for k, ok in sync.items() if not ok]
@@ -272,6 +277,52 @@ def cmd_init() -> int:
     return cmd_status()
 
 
+def _today_sig(day: dict) -> dict:
+    """今日结论的复核指纹：日期 / 环境 / 每条的（名称, 动作, 综合分）。"""
+    if not day:
+        return {}
+    return {
+        "date": day.get("date"),
+        "regime": day.get("regime"),
+        "picks": {p.get("name"): (p.get("action"), round(float(p.get("composite") or 0), 1))
+                  for p in (day.get("picks") or [])},
+    }
+
+
+def _report_today_diff(prev: dict, prev_sig: dict, now: dict) -> None:
+    """盘前复核：把「本次运行前后今日结论的变化」如实打出来（数据补齐后结论是否移动）。"""
+    if not now:
+        return
+    now_sig = _today_sig(now)
+    print("\n[daily] 盘前复核（结论变更）：")
+    if not prev_sig:
+        print(f"    首次生成：{now_sig['date']}，{len(now_sig['picks'])} 条结论，环境 {now_sig['regime']}")
+        return
+    if prev_sig.get("date") != now_sig.get("date"):
+        print(f"    结论日推进：{prev_sig.get('date')} → {now_sig.get('date')}"
+              f"（{len(now_sig['picks'])} 条结论，环境 {now_sig['regime']}）")
+    else:
+        moved = []
+        for name, (act, sc) in now_sig["picks"].items():
+            old = prev_sig["picks"].get(name)
+            if old is None:
+                moved.append(f"新增 {name}（{act} {sc}）")
+            elif abs(old[1] - sc) >= 1.0 or old[0] != act:
+                moved.append(f"{name}：{old[0]} {old[1]} → {act} {sc}")
+        for name, (act, sc) in prev_sig["picks"].items():
+            if name not in now_sig["picks"]:
+                moved.append(f"移除 {name}（原 {act} {sc}）")
+        if prev_sig.get("regime") != now_sig.get("regime"):
+            moved.append(f"环境档位 {prev_sig['regime']} → {now_sig['regime']}")
+        print(f"    结论日不变（{now_sig['date']}）：" + ("无变化 ✓" if not moved else ""))
+        for m in moved:
+            print(f"      · {m}")
+    est = sorted((now.get("tail_fill") or {}).get("days") or {})
+    if est:
+        _m = (now.get("tail_fill") or {}).get("method")
+        print(f"    ⚠ 其中 {est} 用了兜底数据（方式 {_m}）——官方出数后重跑本命令即自动覆盖并复核")
+
+
 def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
     py = pick_python()
     print(f"[daily] 解释器: {py}")
@@ -290,6 +341,11 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
     else:
         print("[daily/4] 跳过抓取（--skip-fetch）")
 
+    # 运行前快照今日结论：跑完后对比，回答「盘前复核：结论变了吗」
+    # （两段式节奏：当晚 15:05 用实时兜底出预备结论 → 次晨官方出数后重跑复核）
+    _prev_today = _jload(os.path.join(ROOT, "web", "public", "data", "today.json")) or {}
+    _prev_sig = _today_sig(_prev_today)
+
     print("[daily/4] 运行管线 ...")
     # 不硬性传 --refresh：panel 变了特征层守卫会自动重建，没变就复用
     # （--skip-fetch 离线调试时不必白付一次特征构建）。
@@ -304,6 +360,9 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
 
     print("[daily/4] 同步部署副本 ...")
     sync_site()
+
+    _now_today = _jload(os.path.join(ROOT, "web", "public", "data", "today.json")) or {}
+    _report_today_diff(_prev_today, _prev_sig, _now_today)
 
     lv1 = water_level()
     print("\n[daily] 更新后水位:")
