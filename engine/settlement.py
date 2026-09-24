@@ -468,7 +468,11 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
                           gate_window: int = 200,
                           max_per_sid: Optional[int] = None,
                           cash_yield: float = 0.010,
-                          end_date: Optional[str] = None) -> dict:
+                          end_date: Optional[str] = None,
+                          extend_on_trend: bool = False,
+                          extend_days: int = 60,
+                          break_ma: int = 20,
+                          break_days: int = 0) -> dict:
     """**有限资金池的可执行账户（主口径）**：净值由现金账逐日记账产生。
 
     与"用公式给净值"的旧口径的根本区别——这里**没有每日再平衡**。账户只有：
@@ -493,6 +497,15 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
 
     成本：按开仓名义额计 C.ROUND_TRIP_COST（佣金万二 + 滑点万五，双边），
     在卖出时从所得扣除，使单笔实现收益 = 毛收益 − 成本，与 settle_trade 同口径。
+
+    **可选退出规则**（默认全部关闭，开启后即为口径变更，需在文档里披露）：
+      · extend_on_trend：到期日若收盘仍在 MA(break_ma) 上方 → 延长 extend_days 个交易日
+        （只延长一次），让没走完的趋势继续走；破位规则仍然生效。
+      · break_days>0：连续 break_days 个交易日收盘跌破 MA(break_ma) → **次日开盘**平仓。
+        开盘卖出所得当日可用（ETF 卖出资金当日可买），因此这笔钱能参与同一天的建仓；
+        平仓发生在建仓之前，槽位也在同一天释放。
+    实测（docs/周期错配归因审计-2026-09-24.md 第四节）：纯破位早退是"回撤换收益"
+    （每笔期望 +5.67% → +1.12%），但能救回 77% 的"周期错配"笔；混合规则介于两者之间。
     """
     dates = book.dates
     s_i = 0
@@ -594,6 +607,37 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
         if cap_series is not None:
             expo = float(np.clip(min(expo, float(cap_series[k])), 0.0, 1.0))
 
+        # ---- ⓪ 破位平仓（昨日收盘触发 → 今日开盘卖出；所得当日可用于建仓）----
+        if break_days > 0:
+            still: List[dict] = []
+            for h in holdings:
+                if not h.get("_exit_open"):
+                    still.append(h)
+                    continue
+                px = book.open_(h["secid"], k) or book.close(h["secid"], k)
+                if not px:
+                    still.append(h)          # 没有价格就留到明天再试
+                    continue
+                proceeds = h["shares"] * px - h["amt"] * COST
+                cash += proceeds
+                gross = px / h["buy_px"] - 1.0 if h["buy_px"] else None
+                net = (gross - COST) if gross is not None else None
+                n_sells += 1
+                day_events.append({
+                    "k": "S", "sw": h["sw"], "sid": h["secid"],
+                    "price": round(px, 6), "bd": dates[h["buy_i"]],
+                    "bpx": round(h["buy_px"], 6), "h": h["horizon"], "a": h["action"],
+                    "why": f"跌破 MA{break_ma}（连续 {break_days} 日）→ 次日开盘平仓",
+                    "gross": round(gross, 5) if gross is not None else None,
+                    "ret": round(net, 5) if net is not None else None,
+                    "ex": round(net - _bench_ret(h["buy_i"], k), 5)
+                          if _bench_ret(h["buy_i"], k) is not None else None,
+                    "w": round(h["w"], 4), "amt": round(proceeds, 10),
+                    "sh": round(h["shares"], 10),
+                    "break_exit": True,
+                })
+            holdings = still
+
         # ---- ① 开盘买入（只用昨收现金；当日到期仍占槽位）----
         adds_all = sorted(plan.get(k, []), key=lambda x: -x["score"])
         if max_new_per_day is not None:
@@ -650,6 +694,15 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
                 })
 
         # ---- ② 收盘卖出（到期；当日所得次日才可用）----
+        # 到期延展：到期日收盘仍在 MA 上方 → 延长一次，让没走完的趋势继续走
+        if extend_on_trend:
+            for h in holdings:
+                if h["end"] <= k and not h.get("_extended"):
+                    c0 = book.close(h["secid"], k)
+                    ma0 = book.ma_at(h["secid"], k, break_ma)
+                    if c0 and ma0 and c0 > ma0:
+                        h["end"] = k + int(extend_days)
+                        h["_extended"] = True
         kept: List[dict] = []
         for h in holdings:
             c = book.close(h["secid"], k)
@@ -677,6 +730,16 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
                         if (cash - proceeds + h["shares"] * px) > 0 else None,
                     })
                 continue
+            # 破位判定：连续 break_days 日收盘跌破 MA → 标记次日开盘平仓
+            if break_days > 0 and not h.get("_exit_open"):
+                below = 0
+                for j in range(k - break_days + 1, k + 1):
+                    cj = book.close(h["secid"], j)
+                    mj = book.ma_at(h["secid"], j, break_ma)
+                    if cj and mj and cj < mj:
+                        below += 1
+                if below >= break_days:
+                    h["_exit_open"] = True
             kept.append(h)
         holdings = kept
 
@@ -772,6 +835,9 @@ def simulate_cash_account(book: EtfBook, trades: List[dict],
         "avg_ticket": round(float(np.mean(tickets)), 5) if tickets else None,
         "n_sells": n_sells,
         "open_at_end": len(holdings),
+        "exit_rule": (("extend_on_trend+" if extend_on_trend else "")
+                      + (f"break_ma{break_ma}x{break_days}" if break_days else "maturity")
+                      or "maturity"),
     })
     stats["avg_exposure"] = stats["avg_deployed"]
     stats["avg_invested"] = stats["avg_deployed"]

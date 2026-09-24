@@ -25,7 +25,10 @@ from feature_store import EW_CODE, FeatureStore  # noqa: E402
 HORIZONS = C.HORIZON_CANDIDATES
 K_NEIGHBORS = 40
 MIN_SAMPLES = 12
-DEFAULT_HORIZON = 20
+# 样本不足时的回退周期：必须落在 HORIZON_CANDIDATES 里。
+# 原值 20 是"拿不准就短持"的旧假设，但审计显示 20 日档样本平均超额仅 +0.1%、胜率 23.5%，
+# 是全部档位里最差的；去掉 60 日档的同时把回退改为最短候选 80 日。
+DEFAULT_HORIZON = 80
 
 
 def precompute_forward(fs: FeatureStore, horizons: Optional[List[int]] = None) -> dict:

@@ -55,7 +55,9 @@ import rules as RULES  # noqa: E402
 #       → ark-1.8.2-cash0-k24（2026-09-23 用户口径：闲置现金**不计息**，原 1.0%/年）
 #       → ark-1.8.3-mature1.0-k24（2026-09-24 回退 mature_weight 0.7→1.0：walk-forward
 #         审计显示 mw=0.7 使 2024–2026 样本外全为负；见 config.CLASSIFY.mature_weight 注释）
-ENGINE_VERSION = "ark-1.8.3-mature1.0-k24"
+#       → ark-1.8.4-h80-100（2026-09-24 去掉 60 日档：HORIZON_CANDIDATES=[80,100]，
+#         回退周期 20→80。依据 docs/周期错配归因审计-2026-09-24.md）
+ENGINE_VERSION = "ark-1.8.4-h80-100"
 
 
 def config_hash() -> str:
