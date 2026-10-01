@@ -169,7 +169,7 @@ def validate(payload: dict) -> Tuple[List[str], List[str]]:
                     if not isinstance(a, str):
                         warns.append(f"{tag}: artifacts 元素需为字符串")
                         continue
-                    path = re.split(r"\s*[(（]", a, 1)[0].strip()   # 允许「路径 (说明)」写法
+                    path = re.split(r"\s*[(（]", a, maxsplit=1)[0].strip()   # 允许「路径 (说明)」写法
                     if "*" in path or path.startswith("cache/"):
                         continue                       # 通配/缓存产物不检查（缓存可重建）
                     if path and not os.path.exists(os.path.join(ROOT, path)):
