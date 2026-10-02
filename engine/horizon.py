@@ -2,9 +2,10 @@
 """工作流 Step 5 —— 持有周期估计（数据驱动，非拍脑袋）。
 
 方法：历史相似状态匹配（analog）
-  1. 用当日的「状态向量」z = (trend, accel, volume, structure, crowding, env_score) 描述行业所处位置；
+  1. 用当日的「状态向量」z = (mainline, pullback, exhaust, rebound, risk, env_score) 描述行业所处位置；
   2. 在该行业自身历史上找出状态最接近的 K 个交易日；
-  3. 统计这批样本在之后 10/20/40/60 日的真实超额收益、胜率、最大回撤；
+  3. 统计这批样本在之后每个候选周期（C.HORIZON_CANDIDATES，当前 [80, 100] 个交易日）
+     的真实超额收益、胜率、最大回撤；
   4. 按「风险调整期望」择优，得到建议持有周期。
 
 样本不足时回退到默认窗口并显式标记 low_confidence —— 不允许用臆测填补。
@@ -116,8 +117,8 @@ def estimate_horizon(fs: FeatureStore, dims: Dict[str, np.ndarray],
         mean_ex = float(e.mean())
         win = float((e > C.REVIEW["outperf_win"]).sum() / cnt)
         mean_dd = float(ddv.mean())
-        # 回撤惩罚系数 0.25：实证下 0.6 会系统性偏向最短窗口（10 日平均超额 -0.05%），
-        # 而 40/60 日窗口才是期望为正的区间（60 日 +11.35%）。
+        # 回撤惩罚系数 0.25：实证下 0.6 会系统性偏向最短档。当前候选只有 80/100 两档
+        # （见 config.HORIZON_CANDIDATES），惩罚系数只影响这二选一，不再改变档位集合。
         risk_adj = mean_ex - 0.25 * abs(mean_dd)
         stats[H] = {
             "samples": cnt, "mean_excess": round(mean_ex, 4),

@@ -6,7 +6,7 @@
 
 与现有系统的关系：
   - 周期阶段已在信号层算好（scoring.compute_stage，展示层标注），day/*.json picks 带 stage；
-  - 当前持有周期 = 历史相似状态匹配，从 HORIZON_CANDIDATES=[60,80,100] 里挑，
+  - 当前持有周期 = 历史相似状态匹配，从 HORIZON_CANDIDATES=[80,100] 里挑，
     与阶段完全解耦。本实验测「阶段 -> 持有周期」这一假设的增量价值。
 
 方法：交易清单从生产 review.json B/S 事件重建（同源），stage 从 day/*.json picks
