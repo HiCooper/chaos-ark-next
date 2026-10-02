@@ -13,6 +13,7 @@ site/data 又没有任何脚本同步——每天更新要手敲 3 条命令 + 1
     python3 ark.py daily --skip-fetch # 只重跑重放与同步（离线调试）
     python3 ark.py status             # 只读水位报告（唯一可信的「更新到哪天了」）
     python3 ark.py verify             # L0 sha256 校验 + 各层一致性
+    python3 ark.py selftest           # 五项快测（<1min）：改 settlement/qfq/rawstore/config 后必跑
     python3 ark.py repair 2026-09-22 --yes   # 显式重抓并覆写 L0 的某一天（write-once 的唯一例外）
 
 解释器解析顺序（取数与重放都需要 numpy/pandas/akshare）：
@@ -25,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -72,6 +74,23 @@ def pick_python(need_akshare: bool = True) -> str:
     raise SystemExit("\n".join(msg))
 
 
+# 子进程日志目录：cache/ 已在 .gitignore，跨重启可查（/tmp 会随重启清空，
+# 「27 分钟那次 daily 慢在哪」这类事后归因需要跨天日志）。
+LOG_DIR = os.path.join(ROOT, "cache", "logs")
+LOG_KEEP = 40  # 每类日志保留最近 N 份，防止无限膨胀
+
+
+def _prune_logs(log_name: str) -> None:
+    """按日志类别只保留最近 LOG_KEEP 份（文件名自带时间戳，字典序即时间序）。"""
+    try:
+        pat = f"ark_{log_name}_"
+        files = sorted(fn for fn in os.listdir(LOG_DIR) if fn.startswith(pat))
+        for fn in files[:-LOG_KEEP] if len(files) > LOG_KEEP else []:
+            os.remove(os.path.join(LOG_DIR, fn))
+    except OSError:
+        pass
+
+
 def _run(python: str, script: str, args: list, log_name: str) -> int:
     """跑引擎子脚本：子进程输出直接重定向到日志文件（不经本进程泵管道）。
 
@@ -79,7 +98,10 @@ def _run(python: str, script: str, args: list, log_name: str) -> int:
     卡死且日志为空，难排查。直接重定向后日志永远反映子进程真实进度，
     控制台只负责给出日志路径，进度用 tail -f 看。
     """
-    log = f"/tmp/ark_{log_name}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    os.makedirs(LOG_DIR, exist_ok=True)
+    _prune_logs(log_name)
+    log = os.path.join(LOG_DIR,
+                       f"ark_{log_name}_{time.strftime('%Y%m%d_%H%M%S')}.log")
     cmd = [python, "-u", os.path.join(ENGINE, script)] + args
     print(f"  $ {' '.join(cmd)}")
     print(f"    日志: {log}   （进度: tail -f {log}）")
@@ -162,6 +184,36 @@ def sync_site(verbose: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------- 水位
+# 非管线 L0 kind（fetch_* 手动抓取，不在 daily 链上）的水位键统一用 L0x_ 前缀：
+# _last_dates() 据此前缀把它们排除在「各层同日」断言外——它们的更新节奏由人决定，
+# 陈旧不报警、也不阻塞 daily/verify。（2026-10-02 架构评审 P1-1）
+_PIPELINE_L0_KINDS = {"sw_index", "etf", "bench", "catalog"}
+
+
+def _l0x_tail_last_date(path: str, nbytes: int = 256) -> str | None:
+    """L0 行式 JSON 的最后一个日期：只读文件尾部找最后一个 "date": "..."。
+
+    比全量 json.load 快两个数量级（sw_valuation 162 文件 71M：3.5s → ~0.03s）。
+    L0 每行（dict）都带 date 键，且这些 kind 的字段名里没有第二个 "date"，
+    所以尾部最后一个匹配就是最新行。找不到时回退全量解析兜底。
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - nbytes))
+            chunk = f.read().decode("utf-8", errors="ignore")
+        hits = re.findall(r'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"', chunk)
+        if hits:
+            return hits[-1]
+        rows = _jload(path)  # 尾部没扫到（如行超长/格式异常）→ 全量兜底
+        if isinstance(rows, list) and rows and isinstance(rows[-1], dict):
+            return rows[-1].get("date")
+    except OSError:
+        pass
+    return None
+
+
 def water_level() -> dict:
     """各层水位。判定「更新到最新了吗」的唯一口径：这些日期应当同日。"""
     lv: dict = {"checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -172,6 +224,34 @@ def water_level() -> dict:
                         if e.get("last")})
         lv[f"L0_{kind}"] = {"files": len(man.get(kind) or {}),
                             "last": lasts[-1] if lasts else None}
+
+    # 非管线 L0 kind 扫描（只加可见性，不加行为）：
+    # data/raw/ 下不在 daily 抓取链里的目录（fetch_* 手动抓取的
+    # sw_valuation / analyst_rank / sw_component 等）。manifest 有登记的用
+    # manifest（如 analyst_rank / sw_component），没有的扫目录取最大日期
+    # （如 sw_valuation）。三个月后还能回答「analyst_rank 停在几号」。
+    if os.path.isdir(RAW_ROOT):
+        for kind in sorted(os.listdir(RAW_ROOT)):
+            kdir = os.path.join(RAW_ROOT, kind)
+            if (not os.path.isdir(kdir)) or kind in _PIPELINE_L0_KINDS:
+                continue
+            ents = man.get(kind) or {}
+            if ents:
+                lasts = sorted({e.get("last") for e in ents.values()
+                                if e.get("last")})
+                lv[f"L0x_{kind}"] = {"files": len(ents),
+                                     "last": lasts[-1] if lasts else None,
+                                     "via": "manifest"}
+            else:
+                last, n = None, 0
+                for fn in sorted(os.listdir(kdir)):
+                    if not fn.endswith(".json"):
+                        continue
+                    n += 1
+                    d = _l0x_tail_last_date(os.path.join(kdir, fn))
+                    if d and (last is None or d > last):
+                        last = d
+                lv[f"L0x_{kind}"] = {"files": n, "last": last, "via": "dir-scan"}
 
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
     _fill = (panel or {}).get("tail_fill") or (panel or {}).get("realtime_fill")
@@ -232,6 +312,9 @@ def water_level() -> dict:
 def _last_dates(lv: dict) -> list:
     out = []
     for k, v in lv.items():
+        if k.startswith("L0x_"):
+            # 非管线 L0 kind：水位报告里展示，但不参与「各层同日」断言
+            continue
         if isinstance(v, dict) and (v.get("last") or v.get("date")):
             out.append((k, v.get("last") or v.get("date")))
     return out
@@ -617,6 +700,147 @@ print(f"repair 完成：{{n}} 个文件被改写，manifest 已重记")
     return 0
 
 
+# ---------------------------------------------------------------- selftest
+def cmd_selftest() -> int:
+    """五项快测（全部 <1min）：事后验收（verify/canary）不拦截「下次改动引入的回归」，
+    这里收录改动即触发的最小检查。触发时机：改 settlement / qfq / rawstore /
+    config 之后跑一次（2026-10-02 架构评审 P2-1）。
+
+    1. 结算器 parity：lab_flex.py 的影子模拟器必须与生产 nav 逐位一致；
+    2. qfq：合成份额折算序列，断言检出断点且复权后收益正确；
+    3. rawstore：临时目录验证 write-once（首采值保留）与 est 覆盖通道；
+    4. lab_registry：登记簿 schema 校验 0 errors / 0 warnings；
+    5. config：权重和、候选档合法性。
+    """
+    import tempfile
+    import shutil as _sh
+    import subprocess
+
+    results: list[tuple[str, bool, str]] = []
+    py = pick_python(need_akshare=False)
+
+    def check(name, fn):
+        try:
+            detail = fn()
+            results.append((name, True, detail or ""))
+        except Exception as e:                       # noqa: BLE001
+            results.append((name, False, f"{type(e).__name__}: {e}"))
+
+    # 1) 结算器 parity（子进程跑 lab_flex.py verify，读生产输出做影子重放比对）
+    def t_parity() -> str:
+        r = subprocess.run([py, "-u", "lab_flex.py", "verify"], cwd=ENGINE,
+                           capture_output=True, text=True, timeout=300)
+        out = r.stdout + r.stderr
+        if r.returncode != 0 or "✅ 一致" not in out:
+            raise AssertionError(f"lab_flex verify 未通过（rc={r.returncode}）\n"
+                                 + "\n".join(out.splitlines()[-8:]))
+        line = next((ln for ln in out.splitlines() if "统一取整后" in ln), "")
+        return line.strip()
+
+    # 2) qfq：合成一次 50% 份额折算（价值中性），行业指数作参照
+    def t_qfq() -> str:
+        import qfq
+        dates = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
+        closes = [1.000, 1.020, 0.505, 0.510]      # 第 3 天价格腰斩 = 折算
+        idx = [1000.0, 1010.0, 1015.0, 1020.0]     # 当日指数 +0.50%
+        sid, sw, code = "510000", "煤炭开采", "801950"
+        ep = {"dates": dates,
+              "series": {sid: {d: {"open": c, "high": c, "low": c, "close": c}
+                               for d, c in zip(dates, closes)}},
+              "sw_to_etf": {sw: sid}, "listing": {sid: {"name": "selftest"}}}
+        pn = {"meta": {code: {"name": sw}},
+              "series": {code: {d: {"close": c} for d, c in zip(dates, idx)}}}
+        breaks = qfq.find_breaks(ep, pn)
+        bl = breaks.get(sid)
+        assert bl and len(bl) == 1, f"应检出 1 处断点，实际 {breaks}"
+        assert bl[0]["date"] == dates[2] and bl[0]["ref_src"] == "index", bl[0]
+        out, rep = qfq.apply_qfq(ep, pn, verbose=False)
+        s = out["series"][sid]
+        tol = 1e-5                                  # apply_qfq 内部 round(,6)
+        r_ref = idx[2] / idx[1] - 1.0               # 断点处真实收益 = 参照收益
+        got = s[dates[2]]["close"] / s[dates[1]]["close"] - 1.0
+        assert abs(got - r_ref) < tol, f"断点收益 {got:.6f} != 参照 {r_ref:.6f}"
+        r_pre = s[dates[1]]["close"] / s[dates[0]]["close"] - 1.0
+        assert abs(r_pre - 0.02) < tol, f"断点前收益被改变: {r_pre:.6f}"
+        r_post = s[dates[3]]["close"] / s[dates[2]]["close"] - 1.0
+        assert abs(r_post - (closes[3] / closes[2] - 1.0)) < tol, "断点后收益被改变"
+        return (f"检出 1 断点 factor={rep[sid][0]['factor']:.4f}，"
+                f"复权后断点收益 {got:+.4%} = 参照 {r_ref:+.4%}")
+
+    # 3) rawstore：monkeypatch 到临时目录，验证 write-once 与 est 覆盖
+    def t_rawstore() -> str:
+        import rawstore as RS
+        tmp = tempfile.mkdtemp(prefix="ark_selftest_l0_")
+        old_root, old_man = RS.RAW_ROOT, RS.MANIFEST_PATH
+        RS.RAW_ROOT, RS.MANIFEST_PATH = tmp, os.path.join(tmp, "manifest.json")
+        try:
+            rows1 = [{"date": "2026-01-02", "close": 1.0},
+                     {"date": "2026-01-03", "close": 2.0, "est": True}]
+            RS.put("selftest_kind", "k1", rows1, source="selftest", merge=False)
+            # 重复 put：重叠日期必须保留首采值，新日期追加
+            RS.put("selftest_kind", "k1",
+                   [{"date": "2026-01-03", "close": 99.0},
+                    {"date": "2026-01-06", "close": 3.0}], source="selftest")
+            d = {r["date"]: r for r in RS.get("selftest_kind", "k1")}
+            assert d["2026-01-02"]["close"] == 1.0, "首采值被覆盖"
+            assert d["2026-01-03"]["close"] == 2.0 and d["2026-01-03"].get("est"), \
+                "est 首采值被覆盖"
+            assert d["2026-01-06"]["close"] == 3.0, "新日期未追加"
+            # est 覆盖通道：官方值可以替换估算值（唯一例外）
+            RS.put("selftest_kind", "k1",
+                   [{"date": "2026-01-03", "close": 2.5}], source="selftest",
+                   overwrite_est=True)
+            d = {r["date"]: r for r in RS.get("selftest_kind", "k1")}
+            assert d["2026-01-03"]["close"] == 2.5 and not d["2026-01-03"].get("est"), \
+                "官方值未能替换 est"
+            return "首采值保留 ✓ 新日期追加 ✓ est 官方覆盖 ✓"
+        finally:
+            RS.RAW_ROOT, RS.MANIFEST_PATH = old_root, old_man
+            _sh.rmtree(tmp, ignore_errors=True)
+
+    # 4) lab_registry：登记簿 schema 校验（stderr 必须为空，见 2026-10-02 弃用修复）
+    def t_registry() -> str:
+        r = subprocess.run([py, "lab_registry.py", "check"], cwd=ENGINE,
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise AssertionError(f"rc={r.returncode}\n{r.stdout[-500:]}")
+        assert not r.stderr.strip(), f"stderr 非空: {r.stderr[-300:]}"
+        first = r.stdout.splitlines()[0].strip() if r.stdout else ""
+        return first
+
+    # 5) config 合法性
+    def t_config() -> str:
+        import config as C
+        s = sum(C.BASE_WEIGHTS.values())
+        assert abs(s - 1.0) < 1e-9, f"BASE_WEIGHTS 权重和 {s} != 1"
+        assert all(w > 0 for w in C.BASE_WEIGHTS.values()), "存在非正权重"
+        hs = C.HORIZON_CANDIDATES
+        assert len(hs) >= 2 and hs == sorted(set(hs)), f"候选档非法: {hs}"
+        assert all(isinstance(h, int) and h > 0 for h in hs), f"候选档非法: {hs}"
+        assert all(v >= 0 for g in C.TRADING_COST.values()
+                   for v in (g.values() if isinstance(g, dict) else [g])), \
+            "交易成本存在负值"
+        return (f"BASE_WEIGHTS 和=1 ✓ HORIZON_CANDIDATES={hs} 严格递增 ✓ "
+                f"TRADING_COST 非负 ✓")
+
+    check("1 结算器 parity  (lab_flex vs 生产 nav 逐位)", t_parity)
+    check("2 qfq 复权       (合成折算断点)", t_qfq)
+    check("3 rawstore       (write-once + est 通道)", t_rawstore)
+    check("4 lab_registry   (schema 校验)", t_registry)
+    check("5 config 合法性  (权重/候选档/成本)", t_config)
+
+    print("\n[selftest] 结果：")
+    for name, ok, detail in results:
+        mark = "✓" if ok else "✗"
+        print(f"  {mark} {name}")
+        if detail:
+            print(f"      {detail}")
+    n_fail = sum(1 for _, ok, _ in results if not ok)
+    print(f"\n  {'✅ 全部通过' if n_fail == 0 else f'❌ {n_fail} 项失败'}"
+          f"（5 项，触发时机：改 settlement/qfq/rawstore/config 后）")
+    return 0 if n_fail == 0 else 1
+
+
 def main():
     args = sys.argv[1:]
     cmd = args[0] if args else "status"
@@ -629,6 +853,8 @@ def main():
         raise SystemExit(cmd_daily(tail, "--full" in args, "--skip-fetch" in args))
     if cmd == "verify":
         raise SystemExit(cmd_verify())
+    if cmd == "selftest":
+        raise SystemExit(cmd_selftest())
     if cmd == "sync":
         sync_site()
         return
