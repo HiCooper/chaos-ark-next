@@ -42,6 +42,6 @@ git add -A
 git commit -qm "deploy: $(date '+%Y-%m-%d %H:%M:%S') · $(git -C "$ROOT" rev-parse --short HEAD)@main"
 git push -f "$REMOTE" "HEAD:$BRANCH" 2>&1 | tail -2
 
-echo "✓ 已推送到 $BRANCH（$(find . -type f | wc -l | tr -d ' ') 个文件）"
+echo "✓ 已推送到 ${BRANCH}（$(find . -type f | wc -l | tr -d ' ') 个文件）"
 echo "  站点：https://hicooper.github.io/chaos-ark-next/"
-echo "  首次使用需在仓库 Settings → Pages 里把 Source 设为 Branch: $BRANCH / (root)"
+echo "  首次使用需在仓库 Settings → Pages 里把 Source 设为 Branch: ${BRANCH} / (root)"
