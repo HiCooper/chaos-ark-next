@@ -661,7 +661,9 @@ td.rank-best { font-weight: 700; text-decoration: underline dotted var(--ink-3);
 .etf-stats .estat .m { font-size: 11px; color: var(--ink-3, #8b94a3); }
 
 /* 账本明细里的「在途」行（已买入、还没卖出）：浅底区分，一眼看出哪些还没了结 */
-.modal tr.ledger-open td { background: rgba(31, 58, 138, 0.045); }
+/* 「在途」行（已买入、还没卖出）：浅底区分，一眼看出哪些还没了结。
+   复盘页逐笔明细与 ETF 弹窗账本明细共用（原来只挂在 .modal 下）。 */
+tr.ledger-open td { background: rgba(31, 58, 138, 0.045); }
 
 /* ---------- 「我的持仓」顶部操作条：先回答"今天买什么、卖什么" ---------- */
 .opbar {

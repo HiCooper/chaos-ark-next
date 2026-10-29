@@ -312,19 +312,100 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
     }).join('')
   }
 
-  // 逐笔成交明细（一行 = 一次完整交易，取自卖出回执）
+  // 逐笔成交明细 = 已结算行（一行 = 一次完整交易，取自卖出回执）
+  //               + 在途行（已按信号建仓、还没到卖出日的 B 点）。
+  // 在途判定与 ETF 弹窗账本同一口径：S 回执按（买入日, 标的）计数，配对不掉的 B 就是在途。
+  // B 事件不带日期字段（只有索引 i），日期由交易日历反查（与 etf-modal-host 同一补法）；
+  // 同日同标的多次买入按卖出回执数量逐个配对，多余的才算在途。
+  const soldKeyCnt = new Map<string, number>()
+  for (const e of events) {
+    if (e.k === 'S' && e.bd) {
+      const key = `${e.bd}|${e.sid}`
+      soldKeyCnt.set(key, (soldKeyCnt.get(key) || 0) + 1)
+    }
+  }
+  // 在途持仓的估值价：与 ETF 弹窗同源（view/etf/<sid>.json 的复权连续价末端）。
+  // 在途集合由全部事件决定，与年份页签无关——只拉一次，切年份不重新请求；
+  // 浮动收益 = 末端复权价 / 买入价 - 1（未扣卖出成本，与弹窗在途行同口径）。
+  const [openPx, setOpenPx] = useState<Record<string, { px: number; d: string }>>({})
+  useEffect(() => {
+    const buySeen = new Map<string, number>()
+    const sids = new Set<string>()
+    for (const e of events as any[]) {
+      if (e.k !== 'B' || !e.price) continue
+      const key = `${allDates[e.i]}|${e.sid}`
+      if ((buySeen.get(key) || 0) >= (soldKeyCnt.get(key) || 0)) sids.add(e.sid)
+      buySeen.set(key, (buySeen.get(key) || 0) + 1)
+    }
+    if (!sids.size) return
+    let alive = true
+    Promise.all(
+      Array.from(sids).map((sid) =>
+        fetch(`view/etf/${sid}.json`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j: any) => {
+            if (!j || !j.adj || !j.dates) return null
+            for (let i = j.adj.length - 1; i >= 0; i--) {
+              if (j.adj[i] != null) return { sid, px: j.adj[i] as number, d: j.dates[i] as string }
+            }
+            return null
+          })
+          .catch(() => null),
+      ),
+    ).then((rs) => {
+      if (!alive) return
+      const m: Record<string, { px: number; d: string }> = {}
+      for (const r of rs) if (r) m[r.sid] = { px: r.px, d: r.d }
+      setOpenPx(m)
+    })
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, allDates])
   const tradeRows = events
     .filter((e: any) => e.k === 'S' && e.i >= lo && e.i <= hi)
     .map((e: any) => ({
+      open: false,
       buyDate: e.bd, buyPx: e.bpx, sellDate: allDates[e.i], sellPx: e.price,
       sw: e.sw, sid: e.sid, code: String(e.sid).split('.')[1] || '',
       etf: etfNames[e.sid] || e.sid, h: e.h, act: e.a, why: e.why,
       held: e.bd ? (e.i - (idxOfDate[e.bd] ?? e.i)) : null,
+      endDate: null as string | null,
       ret: e.ret,
       ex: e.ex,
     }))
     .sort((a, b) => (b.sellDate || '').localeCompare(a.sellDate || ''))
-  const shownTrades = tradeRows.slice(0, 400)
+  // 在途行按买入日过滤（落在当前所选年份才显示），排在表首
+  const buySeen = new Map<string, number>()
+  const openTradeRows = events
+    .filter((e: any) => e.k === 'B' && e.i >= lo && e.i <= hi)
+    .map((e: any) => ({ e, date: allDates[e.i] as string }))
+    .filter(({ e, date }) => {
+      const key = `${date}|${e.sid}`
+      const sold = soldKeyCnt.get(key) || 0
+      const seen = buySeen.get(key) || 0
+      buySeen.set(key, seen + 1)
+      return seen >= sold
+    })
+    .map(({ e, date }) => {
+      const endJ = e.h ? e.i + e.h : null
+      const est = openPx[e.sid]
+      return {
+        open: true,
+        buyDate: date, buyPx: e.price, sellDate: null, sellPx: null,
+        sw: e.sw, sid: e.sid, code: String(e.sid).split('.')[1] || '',
+        etf: etfNames[e.sid] || e.sid, h: e.h, act: e.a, why: null,
+        // 持有天数按数据末端计（仍在场，逐日增长）
+        held: allDates.length ? allDates.length - 1 - e.i : null,
+        // 建议到期日：买入日索引 + 建议周期；落在数据末端之外则留空（未到）
+        endDate: endJ != null && endJ < allDates.length ? allDates[endJ] : null,
+        // 浮动收益：末端复权价 / 买入价 - 1（未扣卖出成本，与 ETF 弹窗在途行同口径）
+        ret: est && e.price ? est.px / e.price - 1 : null,
+        pxDate: est?.d ?? null,
+        ex: null,
+      }
+    })
+    .sort((a, b) => (b.buyDate || '').localeCompare(a.buyDate || ''))
+  const shownTrades = [...openTradeRows, ...tradeRows.slice(0, 400)]
 
 
   return (
@@ -615,8 +696,9 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
           title="逐笔成交明细（曲线上的每个点都能在这里对上）"
           extra={
             <span className="muted">
-              {year === 'all' ? '全区间' : year} · 共 {tradeRows.length} 笔
-              {shownTrades.length < tradeRows.length ? `，显示前 ${shownTrades.length} 笔` : ''}
+              {year === 'all' ? '全区间' : year} · 已结算 {tradeRows.length} 笔
+              {openTradeRows.length > 0 && <> · 在途 <b>{openTradeRows.length}</b> 笔</>}
+              {tradeRows.length > 400 ? '，已结算仅显示前 400 笔' : ''}
               {segAnn != null && (
                 <> · 年化{' '}
                   <b style={{ color: segAnn >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(segAnn)}</b>
@@ -640,8 +722,8 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                 </tr>
               </thead>
               <tbody>
-                {shownTrades.map((t, i) => (
-                  <tr key={i}>
+                {shownTrades.map((t: any, i: number) => (
+                  <tr key={i} className={t.open ? 'ledger-open' : ''}>
                     <td className="num">{t.buyDate || '—'}</td>
                     <td><b>{t.sw}</b>{t.act === 'AMBUSH' && <span className="muted"> 埋伏</span>}</td>
                     <td>
@@ -655,22 +737,42 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
                       <span className="muted num">{t.code}</span>
                     </td>
                     <td className="num" style={{ textAlign: 'right' }}>{num(t.buyPx, 3)}</td>
-                    <td className="num">{t.sellDate}</td>
-                    <td className="num" style={{ textAlign: 'right' }}>{num(t.sellPx, 3)}</td>
-                    <td className="num" style={{ textAlign: 'right' }}>{t.held ?? '—'} 日</td>
-                    <td className="muted" style={{ fontSize: 11.5 }}>
-                      {t.why || (t.h ? `持有到期（建议周期 ${t.h} 个交易日）` : '—')}
+                    <td className="num">
+                      {t.open
+                        ? <Chip tone="mute" title={`未平仓：到建议周期结束才卖出${t.endDate ? `（约 ${t.endDate}）` : '，到期日在数据末端之后'}；净收益列为其浮动收益`}>在途</Chip>
+                        : t.sellDate}
                     </td>
-                    <td className="num" style={{ textAlign: 'right', color: (t.ret ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(t.ret)}</td>
-                    <td className="num" style={{ textAlign: 'right', color: (t.ex ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{pct(t.ex)}</td>
+                    <td className="num" style={{ textAlign: 'right' }}>{t.open ? '—' : num(t.sellPx, 3)}</td>
+                    <td className="num" style={{ textAlign: 'right' }}>
+                      {t.open ? <span title="按数据末端计，仍在逐日增长">{t.held ?? '—'} 日</span> : <>{t.held ?? '—'} 日</>}
+                    </td>
+                    <td className="muted" style={{ fontSize: 11.5 }}>
+                      {t.open
+                        ? `在途 · 建议周期 ${t.h ?? '—'} 个交易日（未到卖出日）`
+                        : (t.why || (t.h ? `持有到期（建议周期 ${t.h} 个交易日）` : '—'))}
+                    </td>
+                    <td className="num" style={{ textAlign: 'right', color: (t.ret ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>
+                      {t.open
+                        ? (t.ret != null
+                            ? <span title={`按 ${t.pxDate} 收盘价估值，未扣卖出成本（与 ETF 弹窗在途行同口径）`}>
+                                {pct(t.ret)}<span className="muted" style={{ fontSize: 10, marginLeft: 3 }}>浮</span>
+                              </span>
+                            : '—')
+                        : pct(t.ret)}
+                    </td>
+                    <td className="num" style={{ textAlign: 'right', color: (t.ex ?? 0) >= 0 ? 'var(--up)' : 'var(--down)' }}>{t.open ? '—' : pct(t.ex)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div className="note" style={{ marginTop: 8 }}>
-            买入价 = 信号次日开盘价；卖出价 = 持有到期日收盘价；净收益已扣双边成本。
+            买入价 = 信号次日开盘价；卖出价 = 持有到期日收盘价；已结算行的净收益已扣双边成本。
             超额为同期相对基准 ETF 的超额。这张表与上方曲线的成交点同源，逐笔可核对。
+            <b>「在途」行 = 已按信号建仓、还没到卖出日的持仓</b>（就是曲线上只有 B 没有 S 的那批），
+            卖出日 / 卖出价 / 超额留空是因为交易还没结束，持有天数按数据末端计、仍在增长；
+            净收益一列显示的是<b>浮动收益</b>——按数据末端复权收盘价估值（打「浮」标）、未扣卖出成本，
+            与 ETF 弹窗账本的「在途」行同口径，结算后会换成扣除双边成本的真实净收益。
             <b>点击「可交易标的」可弹出该 ETF 走势图</b>：买卖点直接标在图上（含原因、权重、
             名义账本与收益对账），发生过份额拆分的标的还会标出折算日。
           </div>

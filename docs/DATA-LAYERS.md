@@ -33,7 +33,16 @@ VIEW web/public/view/     展示层（只给页面看的东西）        由 L1 
 | `bench/<code>.json` | 基准指数日K（上证/沪深300/创业板指/中证1000/中证500） | 新浪（akshare） |
 | `etf/<secid>.json` | ETF 日K（前复权，成交额单位：元） | 新浪（akshare） |
 | `kline_em/` | 东财 BK/基准日K（旧路径，东财解封后仍可用） | 东方财富 push2his |
+| `sw_valuation/<code>.json` | 申万官方指数分析日度数据：close/pe/pb/dp/换手/市值（162 指数，2012 至今，71M）。**非管线 kind**：手动 `python3 engine/fetch_sw_valuation.py`，接口 page_size 上限 ≈200（akshare 硬编码 50） | 申万官方 index_analysis（akshare） |
+| `analyst_rank/<date>.json` | 巨潮个股投资评级流水，一天一文件（2022 至今，192M）。**非管线 kind**：手动 `python3 engine/fetch_analyst_rank.py` | 巨潮资讯（akshare） |
+| `sw_component/<code>.json` | 申万一级行业成分股当前映射（含权重）。**非管线 kind**：手动 `python3 engine/fetch_sw_component.py`；⚠️ 取当前值 ⇒ 幸存者偏差，结论须带此披露 | 申万宏源官方（akshare） |
 | `manifest.json` | 每个文件的 source / fetched_at / rows / 区间 / sha256 | 本地生成 |
+
+> **非管线 kind 的生命周期**（2026-10-02 架构评审 P1-1）：`sw_valuation / analyst_rank /
+> sw_component` 不在 daily 抓取链上，更新节奏由人决定。其水位在 `ark.py status` 里以
+> `L0x_` 前缀展示（`L0x_analyst_rank / L0x_sw_component / L0x_sw_valuation`），
+> **不参与「各层同日」断言**。对应实验结论：估值/基本面（已否决）、分析师预期（已放弃）、
+> 拥挤度（条件化 IC 有效但组合层否决）——详见 2026-09-29 两份实验文档与登记簿。
 
 **不可变语义**（`engine/rawstore.py`）：
 - write-once + merge-append：重复抓取时新日期追加，重叠日期**保留首采值**，绝不覆盖。
