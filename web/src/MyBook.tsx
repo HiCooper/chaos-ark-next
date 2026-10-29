@@ -21,7 +21,9 @@ import {
  * 权重随价格漂移（没有任何每日再平衡）。因此金额是**真实存在的钱**，不是目标权重折算。
  */
 
-const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
+// DIP = 抄底兜底通道（非结论驱动：恐慌空窗日的超跌回升补位，默认关闭）
+const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', DIP: '抄底' }
+const DIP_TIP = '非结论驱动：主策略当日零候选（空窗日）+ 该行业 20 日跌幅≥15% 且已止跌回升，抄底兜底通道的补位建仓'
 
 function Stat({ k, v, n, tone }: { k: string; v: string; n?: string; tone?: 'up' | 'down' }) {
   return (
@@ -214,7 +216,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
           )}
         </div>
 
-        <DataFillBar fill={data?.tail_fill} style={{ marginBottom: 10 }} />
+        <DataFillBar fill={data?.tail_fill} gap={data?.gap_fill} style={{ marginBottom: 10 }} />
 
         {failed && <div className="note">影子账户数据缺失（`data/sim.json`），请先运行一次完整引擎（`python engine/pipeline.py --all`）。</div>}
         {!failed && !sim && <div className="muted small">正在重放账户（首次加载 `data/sim.json`）…</div>}
@@ -311,7 +313,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                             <tr key={i}>
                               <td><EtfCell sid={b.sid} d={acct.nextDate || undefined} /></td>
                               <td className="muted">{b.sw}</td>
-                              <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
+                              <td><Chip tone={b.action === 'DIP' ? 'warn' : b.action === 'BUY_NOW' ? 'up' : 'ambush'} title={b.action === 'DIP' ? DIP_TIP : undefined}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
                               <td className="num" style={{ textAlign: 'right' }}>{num(b.score, 1)}</td>
                               <td className="num buyamt" style={{ textAlign: 'right' }}>{yuan(amt)}</td>
                               <td className="num muted" style={{ textAlign: 'right' }}>{b.lots > 0 ? `${b.lots} 手` : '不足 1 手'}</td>
@@ -347,7 +349,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                     <tr key={i}>
                       <td><EtfCell sid={b.sid} d={acct.nextDate || undefined} /></td>
                       <td className="muted">{b.sw}</td>
-                      <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
+                      <td><Chip tone={b.action === 'DIP' ? 'warn' : b.action === 'BUY_NOW' ? 'up' : 'ambush'} title={b.action === 'DIP' ? DIP_TIP : undefined}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
                       <td className="num buyamt" style={{ textAlign: 'right' }}>{yuan(b.amount)}</td>
                       <td className="num muted" style={{ textAlign: 'right' }}>{b.lots > 0 ? `${b.lots} 手` : '不足 1 手'}</td>
                       <td className="num" style={{ textAlign: 'right' }}>
@@ -421,7 +423,14 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                   ? `当前持仓（${grouped.length} 只 ETF / ${acct.positions.length} 笔）`
                   : `当前持仓（${acct.positions.length} 笔 / ${grouped.length} 只 ETF）`}
               </h2>
-              <span className="n">按 {date} 收盘价盯市 · <b>买入日倒序</b> · 成本 = 买入时实际付出的现金</span>
+              <span className="n">
+                按 {date} 收盘价盯市 · <b>买入日倒序</b> · 成本 = 买入时实际付出的现金
+                {acct.positions.some((p) => p.action === 'DIP') && (
+                  <span className="muted" title={DIP_TIP}>
+                    {' '}· 含<b>抄底兜底</b> {acct.positions.filter((p) => p.action === 'DIP').length} 笔（非结论驱动）
+                  </span>
+                )}
+              </span>
               <button className="linkbtn" style={{ marginLeft: 'auto' }} onClick={() => setByEtf(!byEtf)}>
                 {byEtf ? '按笔查看' : '按 ETF 汇总'}
               </button>
@@ -552,7 +561,7 @@ export default function MyBook({ data, days, selected, onSelect, generatedAt }: 
                         <td><Chip tone="up">买入</Chip></td>
                         <td><EtfCell sid={b.sid} d={b.buyDate} /></td>
                         <td className="muted">{b.sw}</td>
-                        <td><Chip tone={b.action === 'BUY_NOW' ? 'up' : 'ambush'}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
+                        <td><Chip tone={b.action === 'DIP' ? 'warn' : b.action === 'BUY_NOW' ? 'up' : 'ambush'} title={b.action === 'DIP' ? DIP_TIP : undefined}>{ACT_TXT[b.action || ''] || b.action || '—'}</Chip></td>
                         <td className="num" style={{ textAlign: 'right' }}>{num(b.buyPx, 3)}</td>
                         <td className="num" style={{ textAlign: 'right' }}>{yuan(b.amt)}</td>
                         <td className="muted small" style={{ textAlign: 'right' }}>{num(b.shares, 0)} 份 · 到期 {b.endDate || '—'}</td>

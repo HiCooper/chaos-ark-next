@@ -474,6 +474,16 @@ def main():
         if bi is not None:
             start_i = max(start_i, bi)
     dates = fs.dates[start_i:]
+    # 结算层（ETF 日线，新浪）比判断层（申万）慢时，日历不能推进到 ETF 还没出数的那天：
+    # T+1 开盘建仓要用当日开盘价，缺价会让建仓被静默跳过、盯市退化成上一收盘价。
+    # build_etf_panel 已按 ETF 实际尾部截断，这里再兜一层（防 book 与特征库不同步）。
+    if book is not None and getattr(book, "dates", None):
+        last_ok = book.dates[-1]
+        if dates and dates[-1] > last_ok:
+            dropped = [d for d in dates if d > last_ok]
+            dates = [d for d in dates if d <= last_ok]
+            print(f"      ⚠ ETF 日线只到 {last_ok}（判断层已到 {dropped[-1]}）→ "
+                  f"本轮结论停在 {dates[-1]}；{'、'.join(dropped)} 等新浪出数后重跑 daily")
     if tail_n is not None:
         print(f"[2/6] 增量重放：尾部 {tail_n} 天重算，"
               f"其余 {max(0, len(dates) - tail_n)} 天复用缓存 "
@@ -506,8 +516,9 @@ def main():
         with open(f"{C.CACHE_DIR}/panel.json", "r", encoding="utf-8") as _f:
             _panel = json.load(_f) or {}
             rt_fill = _panel.get("tail_fill") or _panel.get("realtime_fill")
+            gap_fill = _panel.get("gap_fill")
     except Exception:
-        rt_fill = None
+        rt_fill, gap_fill = None, None
     est_days = set(((rt_fill or {}).get("days") or {}).keys())
 
     day_dir = f"{C.OUT_DIR}/day"
@@ -519,7 +530,21 @@ def main():
         _pl = day_payload(conclusions[d], exits_by_date.get(d))
         if rt_fill and d in est_days:
             _pl["tail_fill"] = rt_fill
+        if gap_fill:
+            _pl["gap_fill"] = gap_fill
         json.dump(_pl, open(f"{day_dir}/{d}.json", "w"), ensure_ascii=False)
+    # 清掉日历之外的残留 day 文件：上一轮可能把结论推到过某天，本轮因结算层缺数据
+    # 被截断（见上面的 ETF 日历截断），旧文件会与 history 自相矛盾，必须删。
+    n_orphan = 0
+    for fn in os.listdir(day_dir):
+        if not fn.endswith(".json"):
+            continue
+        d = fn[:-5]
+        if d > dates[-1] and d not in dates:
+            os.remove(os.path.join(day_dir, fn))
+            n_orphan += 1
+    if n_orphan:
+        print(f"      day/<date>.json：清理 {n_orphan} 个日历外的残留文件（如 {dates[-1]} 之后）")
     print(f"      day/<date>.json：重写 {len(write_dates)} / 共 {len(dates)}"
           f"（复用 {n_reused} 天缓存，其中 {n_exit_days} 日有在场持仓）")
 
@@ -533,6 +558,10 @@ def main():
               f"失效预警 {at['n_warn']} 笔")
     if rt_fill:
         today["tail_fill"] = rt_fill
+    if gap_fill:
+        today["gap_fill"] = gap_fill
+        print(f"      数据含代理日：{'、'.join(sorted((gap_fill.get('days') or {}).keys()))}"
+              f"（申万整日缺数据，用 ETF 日收益前推，点位为估算）")
     json.dump(today, open(f"{C.OUT_DIR}/today.json", "w"), ensure_ascii=False)
     print("      " + today.get("summary", ""))
 

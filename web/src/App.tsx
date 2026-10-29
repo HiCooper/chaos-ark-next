@@ -47,16 +47,19 @@ export default function App() {
   const latestDate = today?.date || (hist?.days?.length ? hist.days[hist.days.length - 1].date : '')
 
   useEffect(() => {
+    // 数据每天会被引擎重写，但文件名不变（data/today.json）——浏览器会拿缓存的旧副本，
+    // 表现为「数据已更新到 10-28，页面日历里还停在 10-27」。统一 no-store，每次打开都取最新。
+    const NO_STORE: RequestInit = { cache: 'no-store' }
     Promise.all([
-      fetch('data/today.json').then((r) => r.json()).catch((e) => { throw e }),
-      fetch('data/review.json').then((r) => r.json()).catch((e) => { throw e }),
+      fetch('data/today.json', NO_STORE).then((r) => r.json()).catch((e) => { throw e }),
+      fetch('data/review.json', NO_STORE).then((r) => r.json()).catch((e) => { throw e }),
     ])
       .then(([t, r]) => { setToday(t); setReview(r) })
       .catch((e) => setErr(String(e)))
     // 历史结论索引（日历 + 复盘页「每日结论带」用）：缺了不影响主页面，故单独失败不阻断
-    fetch('data/history.json').then((r) => r.json()).then(setHist).catch(() => setHist(null))
+    fetch('data/history.json', NO_STORE).then((r) => r.json()).then(setHist).catch(() => setHist(null))
     // 实验登记簿：独立失败不阻断主页面
-    fetch('data/experiments.json').then((r) => r.json()).then(setLab).catch(() => setLab(null))
+    fetch('data/experiments.json', NO_STORE).then((r) => r.json()).then(setLab).catch(() => setLab(null))
   }, [])
 
   // 今日/历史日数据就位后，把日历选中态对齐到最新交易日
@@ -68,7 +71,7 @@ export default function App() {
   useEffect(() => {
     if (!selected || selected === latestDate || dayCache[selected]) return
     let alive = true
-    fetch(`data/day/${selected}.json`)
+    fetch(`data/day/${selected}.json`, { cache: 'no-store' })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()

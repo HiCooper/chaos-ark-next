@@ -74,6 +74,8 @@ export type Position = {
 
 export type SellRow = {
   sw: string; sid: string; name: string
+  /** 建仓动作（BUY_NOW/AMBUSH/DIP）——弹窗要据此标注「抄底」 */
+  action: string | null
   buyDate: string; buyPx: number; sellPx: number; sellDate: string
   shares: number; amt: number; proceeds: number
   /** 已实现盈亏（已扣成本） */
@@ -308,7 +310,7 @@ export function runSim(
           // 卖出占比同引擎：该笔卖出市值 ÷ 卖出后账户总值（所得已计入现金）
           const valSell = cash - proceeds + h.shares * px
           const sellRow: SellRow = {
-            sw: h.sw, sid: h.sid, name: h.name, buyDate: h.buyDate, buyPx: h.buyPx,
+            sw: h.sw, sid: h.sid, name: h.name, action: h.action, buyDate: h.buyDate, buyPx: h.buyPx,
             sellPx: px, sellDate: d, shares: h.shares, amt: h.amt, proceeds, pnl,
             ret: px / h.buyPx - 1 - COST, gross, heldDays: k - h.buyI, horizon: h.horizon,
             wShare: valSell > 0 ? (h.shares * px) / valSell : 0,
@@ -516,6 +518,7 @@ export function bookEvents(acct: SimResult, sid: string): BookEvent[] {
     out.push({
       k: 'S', date: s.sellDate, sw: s.sw, sid: s.sid, price: s.sellPx,
       bd: s.buyDate, bpx: s.buyPx, h: s.horizon, gross: s.gross, ret: s.ret,
+      a: s.action,
       w_share: s.wShare, amt: s.amt, proceeds: s.proceeds, sh: s.shares,
       pnl: s.pnl, why: '持有到期（本账户没有提前卖出）',
     })

@@ -552,6 +552,153 @@ def _fill_by_etf_proxy(series: Dict[str, Dict[str, dict]],
     return report
 
 
+def fill_interior_holes(series: Dict[str, Dict[str, dict]],
+                        bench_series: Dict[str, Dict[str, dict]],
+                        meta: Dict[str, dict], verbose: bool = True) -> Optional[dict]:
+    """补齐判断层的**整日空洞**（与「尾部滞后」不同的一类缺陷）。
+
+    判据：基准（新浪，最全）该日是交易日，而**没有任何一个 L1 指数**有 bar。
+    这类洞不会自愈——官方出完后面的日期后 `official_last` 已经越过它，
+    `fill_realtime_tail` 只看尾部，永远不会回头补这一根。于是系统整天跳过：
+    没有 day 文件、没有结论、交易日历上一格空白，结算层的到期日还少算一天。
+
+    补法与尾部兜底同一口径（`_fill_by_etf_proxy`）：**只补收益、不发明点位**——
+    行业指数当日收盘 = 该指数上一个官方收盘 × (1 + 对应 ETF 当日收益)；
+    没有对应 ETF 的行业用当日被代理行业的横截面中位收益。
+    逐行打 `est`，L0 用 overwrite_est=True 写入，官方哪天补发就自动被真值覆盖。
+
+    对齐体检（逐日）：被代理行业当日中位涨跌 vs 基准当日涨跌，相差 > 5% 视为口径不对，
+    整天放弃——与尾部兜底同一道闸。
+    """
+    l1 = [c for c, m in meta.items() if m.get("level") == "L1" and c in series]
+    if not l1:
+        return None
+    all_dates = sorted({d for c in l1 for d in series[c]})
+    if len(all_dates) < 2:
+        return None
+    lo, hi = all_dates[0], all_dates[-1]
+    bench_dates = sorted({d for s in bench_series.values() for d in s})
+    covered = set(all_dates)
+    holes = [d for d in bench_dates if lo <= d <= hi and d not in covered]
+    # 历史补出来的日子（L0 里带 src=etf_proxy_gap 的行）——即便这一轮没有新洞，
+    # 也要继续往面板里报，否则前端那条「数据含代理日」的提示会在下一次 daily 后消失，
+    # 而那一天其实仍是估算值。官方真值覆盖后这些行不带 src，自然就消失了。
+    already = sorted({d for c in l1 + [c for c, m in meta.items() if m.get("level") == "L2"]
+                      for d, r in (series.get(c) or {}).items()
+                      if r.get("src") == "etf_proxy_gap"})
+    # 只补**已授权**的日期（config.GAP_FILL_DATES）：补一根历史 bar 会改变回测，
+    # 必须逐个批准。未授权的缺口继续按「已登记空洞」处理，系统整天跳过。
+    allowed = set(getattr(C, "GAP_FILL_DATES", ()) or ())
+    skipped = [d for d in holes if d not in allowed]
+    holes = [d for d in holes if d in allowed]
+    if verbose and skipped:
+        print(f"  [gapfill] 未授权，保持跳过：{skipped}（授权补：config.GAP_FILL_DATES）")
+    if not holes and not already:
+        return None
+    if not holes:      # 没有新洞，但历史代理日仍在：只回报，不重复写 L0
+        rep = {"method": "etf_proxy_gap",
+               "days": {d: {"close": "etf_proxy_gap(ETF 日收益前推)",
+                            "volume": "est(沪深300 量比)", "ohlc": "est(=收盘)",
+                            "method": "etf_proxy_gap"} for d in already},
+               "codes": 0, "rows": 0, "rows_etf": 0, "rows_xs": 0,
+               "source": "新浪 ETF 日线（data/raw/etf）"}
+        if verbose:
+            print(f"  [gapfill] 沿用已补的代理日：{'、'.join(already)}（L0 里已带 est 标记）")
+        return rep
+    try:
+        import json as _json
+        ep = _json.load(open(f"{C.CACHE_DIR}/etf_panel.json", encoding="utf-8"))
+        sw_to_etf = ep.get("sw_to_etf") or {}
+    except Exception:
+        sw_to_etf = {}
+    if not sw_to_etf:
+        if verbose:
+            print("  [gapfill] 缺 etf_panel 的行业→ETF 映射，放弃补整日缺口")
+        return None
+
+    filled: Dict[str, List[dict]] = {}
+    n_etf = n_xs = 0
+    for day in holes:
+        # 当天各行业代理收益（先算有对应 ETF 的）
+        prox: Dict[str, float] = {}
+        for code, s in series.items():
+            if meta.get(code, {}).get("level") not in ("L1", "L2") or day in s:
+                continue
+            prev = max((d for d in s if d < day), default=None)
+            if prev is None:
+                continue
+            r = _etf_proxy_returns(sw_to_etf, meta[code]["name"], [day], verbose=False)
+            if r and day in r:
+                prox[code] = r[day][0]
+        if not prox:
+            if verbose:
+                print(f"  [gapfill] {day} 无任何行业可取到 ETF 代理收益，跳过该日")
+            continue
+        med = sorted(prox.values())[len(prox) // 2]
+
+        # 对齐体检（先做，避免污染 filled）
+        st = bench_series.get("1.000300") or bench_series.get("1.000001") or {}
+        bd = sorted(st)
+        bprev = max((d for d in bd if d < day), default=None)
+        if bprev and st.get(day):
+            bench_ret = float(st[day]["close"]) / float(st[bprev]["close"]) - 1.0
+            if abs(med - bench_ret) > 0.05:
+                if verbose:
+                    print(f"  [gapfill] {day} 对齐体检不通过：代理中位 {med:+.2%} vs "
+                          f"基准 {bench_ret:+.2%} → 放弃该日")
+                continue
+
+        for code, s in series.items():
+            if meta.get(code, {}).get("level") not in ("L1", "L2") or day in s:
+                continue
+            prev = max((d for d in s if d < day), default=None)
+            if prev is None:
+                continue
+            ret = prox.get(code, med)
+            clamped = abs(ret) > 0.11          # 份额折算/数据错 → 夹住并标记
+            ret = max(-0.11, min(0.11, ret))
+            base = s[prev]
+            b0 = float(base["close"])
+            cur = b0 * (1.0 + ret)
+            v0, a0 = float(base.get("volume") or 0.0), float(base.get("amount") or 0.0)
+            ratio = _bench_vol_ratio(bench_series, prev, day) or 1.0
+            est = ["gap_close_proxy" if code in prox else "gap_close_xs_median",
+                   "open", "high", "low", "volume", "amount"]
+            if clamped:
+                est.append("clamped_11pct")
+            filled.setdefault(code, []).append(
+                {"date": day, "open": cur, "high": cur, "low": cur, "close": cur,
+                 "volume": v0 * ratio, "amount": a0 * ratio,
+                 "est": est, "src": "etf_proxy_gap"})
+            if code in prox:
+                n_etf += 1
+            else:
+                n_xs += 1
+
+    if not filled:
+        return None
+    for code, rows in filled.items():
+        RS.put("sw_index", code, rows, SOURCE_SW_RT, merge=True, overwrite_est=True,
+               note="申万整日缺数据时用 ETF 收益代理补缺（见 docs/数据缺口-判断层整日缺失.md）")
+        for r in rows:
+            series[code][r["date"]] = r
+        series[code] = dict(sorted(series[code].items()))
+    report = {
+        "method": "etf_proxy_gap",
+        "days": {d: {"close": "etf_proxy_gap(ETF 日收益前推)", "volume": "est(沪深300 量比)",
+                     "ohlc": "est(=收盘)", "method": "etf_proxy_gap"}
+                 for d in sorted(set(holes) | set(already))},
+        "codes": len(filled), "rows": sum(len(v) for v in filled.values()),
+        "rows_etf": n_etf, "rows_xs": n_xs,
+        "source": "新浪 ETF 日线（data/raw/etf）",
+    }
+    if verbose:
+        print(f"  [gapfill] 判断层整日缺口 {len(holes)} 天：{'、'.join(holes)}；"
+              f"用 {len(filled)} 个行业补齐（ETF 代理 {n_etf} 行 / 中位 {n_xs} 行）")
+        print("           只补收益不发明点位，逐行标 est；官方补发后 daily 自动用真值覆盖")
+    return report
+
+
 # ---------------------------------------------------------------- 面板
 def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
     """从 L0（必要时先抓）组装 panel.json，结构与东财版完全同构。"""
@@ -588,6 +735,10 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
     # 官方申万日线滞后于基准（新浪）时补尾部：≤2 天用实时行情、更长用 ETF 收益代理
     # （估算字段逐行带 est 标记，官方出数后 L0 overwrite_est 自动覆盖）
     rt_fill = fill_realtime_tail(series, bench_series, meta, verbose=verbose)
+    # 另一类缺陷：官方**整日**缺数据（当天 120 个指数全无 bar，而 ETF/基准正常交易）。
+    # 它不会被上面那条尾部兜底捡到（official_last 已经越过它），必须单独补，且要在
+    # 下面的交易日轴之前补——否则这一天根本进不了日历。
+    gap_fill = fill_interior_holes(series, bench_series, meta, verbose=verbose)
 
     # 交易日轴：L1 全体指数日期的并集（申万官方同一日历，取并集防个别指数缺失）
     l1_codes = [c for c, m in meta.items() if m["level"] == "L1"]
@@ -602,6 +753,7 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
         "meta": meta,
         "series": series,
         "tail_fill": rt_fill,
+        "gap_fill": gap_fill,
     }
     os.makedirs(C.CACHE_DIR, exist_ok=True)
     with open(f"{C.CACHE_DIR}/panel.json", "w", encoding="utf-8") as f:

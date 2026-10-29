@@ -27,7 +27,8 @@ const C_ADJ = '#c62828'                // 复权价（与主曲线同色系 = �
 const C_RAW = '#8b94a3'                // 原始市价
 const C_B = '#c62828'
 const C_S = '#1565c0'
-const C_BRK = '#b45309'                // 份额折算断点
+const C_BRK = '#b45309'                // 份额折算断点（琥珀）
+const C_DIP = '#7a5af8'                // 抄底兜底（紫，与「份额折算」的琥珀菱形区分开）
 
 export type SidEvent = {
   k: 'B' | 'S'
@@ -105,7 +106,7 @@ type EtfSeries = {
   breaks: { date: string; prev: string; raw_ret: number; ref_ret: number; ref_src: string; ratio?: number; factor: number }[]
 }
 
-const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
+const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', DIP: '抄底' }
 const REF_TXT: Record<string, string> = { index: '行业指数', median: '全池中位数' }
 
 /** 账本明细的一行：open=false 为已结算（有 S），open=true 为在途（只有 B） */
@@ -248,7 +249,7 @@ export function EtfModal(props: EtfModalInput) {
     let alive = true
     // 展示层根目录：view/（不是数据层 data/）。由 engine/build_etf_webdata.py
     // 从结算账簿切片而来，价格与结算取价同源。
-    fetch(`view/etf/${sid}.json`)
+    fetch(`view/etf/${sid}.json`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => { if (alive) setData(j) })
       .catch((e) => { if (alive) setErr(String(e)) })
@@ -388,7 +389,11 @@ export function EtfModal(props: EtfModalInput) {
     const brkByDate: Record<string, any> = {}
     for (const b of data.breaks) brkByDate[b.date] = b
 
-    const bPts = winEvents.filter((e) => e.k === 'B' && idxOf[e.date!] !== undefined)
+    // 买入点拆两类：结论驱动（红 B）与抄底兜底（琥珀「抄」）——后者非结论驱动，必须一眼可辨
+    const isDip = (e: SidEvent) => e.k === 'B' && e.a === 'DIP'
+    const bPts = winEvents.filter((e) => e.k === 'B' && !isDip(e) && idxOf[e.date!] !== undefined)
+      .map((e) => ({ value: [e.date, data.adj[idxOf[e.date!]]], date: e.date }))
+    const dipPts = winEvents.filter((e) => isDip(e) && idxOf[e.date!] !== undefined)
       .map((e) => ({ value: [e.date, data.adj[idxOf[e.date!]]], date: e.date }))
     const sPts = winEvents.filter((e) => e.k === 'S' && idxOf[e.date!] !== undefined)
       .map((e) => ({ value: [e.date, data.adj[idxOf[e.date!]]], date: e.date }))
@@ -440,7 +445,7 @@ export function EtfModal(props: EtfModalInput) {
       legend: {
         top: 2, left: 54, itemWidth: 14, itemHeight: 8, itemGap: 14,
         textStyle: { fontSize: 11, color: '#4b5563' },
-        data: ['复权连续价（结算口径）', '原始市价（行情软件口径）', '买入 B', '卖出 S', '份额折算日'],
+        data: ['复权连续价（结算口径）', '原始市价（行情软件口径）', '买入 B', '抄底 DIP', '卖出 S', '份额折算日'],
       },
       tooltip: {
         trigger: 'axis', confine: true, transitionDuration: 0,
@@ -455,8 +460,8 @@ export function EtfModal(props: EtfModalInput) {
           const raw = data.raw[i]
           const adj = data.adj[i]
           // ---- 内容同样对齐复盘页走势图：ek-h 表头 + ek-kv 键值 + ek-sec 分段 + ek-mute 备注 ----
-          let html = `<div class="ek-h">${date}${
-            data.name ? ` · <span class="ek-sum">${data.name}</span>` : ''}</div>`
+          // 表头只放日期：标的名称在弹窗标题里已有，重复一遍既冗余又把行撑长
+          let html = `<div class="ek-h">${date}</div>`
           html += tipKV('原始市价', raw != null ? raw.toFixed(3) : '停牌/无数据')
           html += tipKV('复权连续价', adj != null ? adj.toFixed(4) : '—')
           const ni = navIdxOf[date]
@@ -476,7 +481,9 @@ export function EtfModal(props: EtfModalInput) {
           const evs = evByDate[date] || []
           for (const e of evs) {
             const isB = e.k === 'B'
-            html += `<div class="ek-sec">${isB ? '买入 B' : '卖出 S'} · ${e.sw}${e.a ? `（${ACT_TXT[e.a] || e.a}）` : ''}</div>`
+            const sec = !isB ? '卖出 S' : e.a === 'DIP' ? '抄底 DIP' : '买入 B'
+            const actTag = e.a && e.a !== 'DIP' ? `（${ACT_TXT[e.a] || e.a}）` : ''
+            html += `<div class="ek-sec">${sec} · ${e.sw}${actTag}</div>`
             html += tipKV(isB ? '买入价（T+1开盘）' : '卖出价（到期收盘）', (e.price ?? 0).toFixed(4))
             if (!isB) {
               const tone = (x: number | null | undefined) => (x == null ? undefined : x >= 0 ? 'up' as const : 'down' as const)
@@ -490,6 +497,10 @@ export function EtfModal(props: EtfModalInput) {
             if (e.w_share != null) html += tipKV('组合占比', `${(e.w_share * 100).toFixed(2)}%`)
             if (isB && e.h) html += tipKV('建议周期', `${e.h} 个交易日`)
             if (isB && e.sc != null) html += tipKV('综合分', String(e.sc))
+            if (isB && e.a === 'DIP') {
+              html += `<div class="ek-mute">抄底兜底：主策略当日零候选 + 该行业超跌且已止跌回升，`
+              html += `非结论驱动（见 docs/抄底兜底通道.md）。</div>`
+            }
             if (!isB && e.why) html += `<div class="ek-mute">卖出原因：${e.why}</div>`
           }
           return `<div class="ektip">${html}</div>`
@@ -533,6 +544,12 @@ export function EtfModal(props: EtfModalInput) {
           name: '买入 B', type: 'scatter', data: bPts, z: 6, symbolSize: 15,
           itemStyle: { color: C_B, borderColor: '#fff', borderWidth: 1.4 },
           label: { show: true, formatter: 'B', color: '#fff', fontSize: 9, fontWeight: 700, position: 'inside' },
+        },
+        {
+          name: '抄底 DIP', type: 'scatter', data: dipPts, z: 6, symbolSize: 16,
+          symbol: 'diamond',
+          itemStyle: { color: C_DIP, borderColor: '#fff', borderWidth: 1.4 },
+          label: { show: true, formatter: '抄', color: '#fff', fontSize: 9, fontWeight: 700, position: 'inside' },
         },
         {
           name: '卖出 S', type: 'scatter', data: sPts, z: 6, symbolSize: 15,
@@ -686,7 +703,12 @@ export function EtfModal(props: EtfModalInput) {
                     )
                     return (
                       <tr key={i} className={t.open ? 'ledger-open' : ''}>
-                        <td className="num">{t.buyDate}</td>
+                        <td className="num">
+                          {t.buyDate}
+                          {t.act === 'DIP' && (
+                            <Chip tone="warn" title="抄底兜底：非结论驱动（主策略零候选 + 超跌回升）">抄底</Chip>
+                          )}
+                        </td>
                         <td className="num" style={{ textAlign: 'right' }}>{num(t.bpx, 4)}</td>
                         <td className="num" style={{ textAlign: 'right' }}>{shares != null ? num(shares, 2) : '—'}</td>
                         {money && (

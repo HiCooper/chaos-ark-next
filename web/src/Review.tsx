@@ -4,7 +4,7 @@ import { Bars, Card, Chip, Marker, MarkerLine, Metric, num, pct } from './ui'
 import { useEtfModal } from './etf-modal-host'
 
 const REGIME_TXT: Record<string, string> = { ATTACK: '进攻', NEUTRAL: '中性', DEFEND: '防守', PANIC: '恐慌' }
-const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏' }
+const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', DIP: '抄底' }
 const PHASE_TXT: Record<string, string> = { BULL: '上行段', BEAR: '下行段' }
 
 function verdictChip(v: string) {
@@ -78,7 +78,7 @@ export default function Review({ data, hist }: { data: any; hist?: any }) {
   // 全池份额折算断点清单（web/public/view/etf/_breaks.json，展示层切片，由 engine/build_etf_webdata.py 生成）
   const [breaks, setBreaks] = useState<any[] | null>(null)
   useEffect(() => {
-    fetch('view/etf/_breaks.json')
+    fetch('view/etf/_breaks.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => setBreaks(j.breaks || []))
       .catch(() => setBreaks([]))

@@ -83,7 +83,7 @@ export function EtfModalHost({ settlement, children }: { settlement: any; childr
   const [index, setIndex] = useState<Record<string, { sid: string; name: string }> | null>(null)
 
   useEffect(() => {
-    fetch('view/etf/_index.json')
+    fetch('view/etf/_index.json', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((j) => setIndex(j.etfs || {}))
       .catch(() => setIndex(null))

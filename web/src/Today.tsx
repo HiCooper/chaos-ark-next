@@ -220,7 +220,7 @@ function px(v?: number | null) {
   return v === null || v === undefined ? '—' : v.toFixed(3)
 }
 
-const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', AVOID: '回避', WATCH: '观察' }
+const ACT_TXT: Record<string, string> = { BUY_NOW: '入手', AMBUSH: '埋伏', AVOID: '回避', WATCH: '观察', DIP: '抄底' }
 
 /** 一笔在场（或待出手）持仓。数据全部来自结算层对历史结论的重放，不是前端推算。 */
 function PosRow({ x, tone }: { x: any; tone?: 'sell' | 'warn' }) {
@@ -462,7 +462,7 @@ export default function Today({ data }: { data: any }) {
 
   return (
     <>
-      {<DataFillBar fill={data.tail_fill} style={{ marginBottom: 12 }} />}
+      {<DataFillBar fill={data.tail_fill} gap={data.gap_fill} style={{ marginBottom: 12 }} />}
       {offline && (
         <div className="card" style={{ padding: '10px 16px', borderLeft: '3px solid var(--warn)', marginBottom: 14 }}>
           <div className="small" style={{ color: 'var(--ink-2)' }}>

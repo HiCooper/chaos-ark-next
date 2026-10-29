@@ -186,7 +186,13 @@ function ExperimentCard({ e }: { e: any }) {
 export default function Lab({ data }: { data: any }) {
   if (!data) return <div className="card"><div className="empty">实验数据缺失</div></div>
   const { baseline_version, baseline_metrics, principles, experiments } = data
-  const list: any[] = experiments || []
+  // 实验列表按实验时间**倒序**（最新在前）：date 允许 YYYY-MM 或 YYYY-MM-DD，
+  // 字符串比较即可；同一天内按 id 稳定排序，避免刷新时顺序抖动。
+  const list: any[] = [...(experiments || [])].sort((a, b) => {
+    const da = String(a.date || ''), db = String(b.date || '')
+    if (da !== db) return db.localeCompare(da)
+    return String(a.id || '').localeCompare(String(b.id || ''))
+  })
   return (
     <>
       <div className="card lab-principles">

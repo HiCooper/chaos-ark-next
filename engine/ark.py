@@ -44,6 +44,10 @@ RAW_ROOT = os.path.join(ROOT, "data", "raw")
 AKSHARE_SKILL_VENV = os.path.expanduser(
     "~/.workbuddy/skills/akshare-data/.venv/bin/python")
 
+# config 只有 os 依赖，可以直接导入（本脚本可能在无 numpy 的系统 python 下运行）
+sys.path.insert(0, ENGINE)
+import config as C  # noqa: E402
+
 
 # ---------------------------------------------------------------- 基础设施
 def _imports_ok(python: str, need_akshare: bool) -> bool:
@@ -237,6 +241,49 @@ def _last_dates(lv: dict) -> list:
     return out
 
 
+def _l0_partial_tail():
+    """L0 尾部有零星数据、但还没构成「交易日」的那一天（盘后陆续写入的过渡态）。
+
+    交易日的权威定义是 panel 的 L1 并集；某天源端只有极少数指数有 bar 时，panel 不会
+    接受这天，于是 L0 的 last 会比 panel / 结论都新一天。这不是错位，是过渡态——
+    18:00 后抓数时必然出现。返回 (日期, 已有该日的指数只数)，否则 (None, 0)。
+    """
+    pl = (_jload(os.path.join(ROOT, "cache", "panel.json")) or {}).get("dates") or []
+    man = _jload(os.path.join(RAW_ROOT, "manifest.json")) or {}
+    sw = man.get("sw_index") or {}
+    if not pl or not sw:
+        return None, 0
+    last = max(((v.get("last") or "") for v in sw.values()), default="")
+    if not last or last <= pl[-1]:
+        return None, 0
+    return last, sum(1 for v in sw.values() if (v.get("last") or "") >= last)
+
+
+def _judge_calendar_gaps():
+    """判断层「整日缺口」：基准（新浪，最全）是交易日、panel 里却没有的那些天。
+
+    成因不是抓取失败，而是**申万官方当天整日无数据**（同一日 ETF 与上证指数都有行情）。
+    危害是静默的：panel 没有这一天 → 没有 day 文件、没有结论、交易日历上是一格空白，
+    看上去像「当天没出结论」，实际是「这一天不在系统里」；结算层按 panel 交易日计数，
+    到期日也会整体少算。
+
+    只比较「基准交易日集合 − panel 日期集合」，两个文件即可，不逐只指数扫。
+    返回 (未登记缺口, 已登记缺口)；登记表见 config.KNOWN_JUDGE_GAPS。
+    """
+    panel = _jload(os.path.join(ROOT, "cache", "panel.json")) or {}
+    dates = panel.get("dates") or []
+    bench = _jload(os.path.join(RAW_ROOT, "bench", "1.000001.json"))
+    rows = (bench or {}).get("rows") if isinstance(bench, dict) else bench
+    if not dates or not rows:
+        return [], []
+    have = set(dates)
+    lo, hi = dates[0], dates[-1]
+    holes = sorted(r["date"] for r in rows
+                   if r.get("date") and lo <= r["date"] <= hi and r["date"] not in have)
+    known = getattr(C, "KNOWN_JUDGE_GAPS", {}) or {}
+    return ([d for d in holes if d not in known], [d for d in holes if d in known])
+
+
 def cmd_status() -> int:
     lv = water_level()
     print("ARK 水位报告（唯一可信口径：以下日期应当同日）")
@@ -257,8 +304,22 @@ def cmd_status() -> int:
               f"(建于 {fp.get('built_at')}, engine {fp.get('engine_version')})")
     dates = [d for _, d in _last_dates(lv)]
     uniq = sorted(set(dates))
+    # 「结算层尾部落后判断层」是正常状态：新浪 ETF 日线常比申万晚一晚出数。
+    # 此时 pipeline 已把结论截到结算层末日（T+1 建仓需要 ETF 开盘价），不应算不一致。
+    _pl = (_jload(os.path.join(ROOT, "cache", "panel.json")) or {}).get("dates") or []
+    _el = (_jload(os.path.join(ROOT, "cache", "etf_panel.json")) or {}).get("dates") or []
+    tail_lag = bool(_pl and _el and _pl[:len(_el)] == _el and len(_pl) > len(_el))
     if len(uniq) == 1:
         print(f"\n  ✓ 各层水位一致：{uniq[0]}")
+    elif tail_lag:
+        print(f"\n  ⚠ 结算层尾部落后 {len(_pl) - len(_el)} 天："
+              f"ETF 日线到 {_el[-1]}，判断层（申万）到 {_pl[-1]}")
+        print(f"    结论已截到 {_el[-1]}（T+1 开盘建仓需要 ETF 开盘价；缺价会让建仓被静默跳过）；"
+              f"新浪出数后重跑 daily 即补齐")
+    elif (pt := _l0_partial_tail())[0] and set(uniq) <= {_pl[-1], pt[0]}:
+        # 过渡态：L0 尾部只有零星几只指数有 bar，尚未构成交易日，panel/结论停在 last
+        print(f"\n  ⚠ L0 尾部 {pt[0]} 只有 {pt[1]} 只指数有数据，未构成交易日 → "
+              f"结论停在 {_pl[-1]}（源端出全后重跑 daily）")
     else:
         print(f"\n  ✗ 水位不一致：{uniq}")
         print("    排查顺序：L0 抓取是否成功 → panel/etf_panel 是否重建 → pipeline 是否带 --refresh")
@@ -277,7 +338,20 @@ def cmd_status() -> int:
         print(f"  ✗ site 与 web/public 不一致（{', '.join(bad)}）→ 运行 python3 engine/ark.py sync")
     else:
         print("  ✓ site 已同步（data 数据层 + view 展示层）")
-    return 0 if (len(uniq) == 1 and not bad) else 1
+
+    # 判断层日历缺口：基准有、panel 无 = 申万当天整日没数据，系统把这一天整日跳过了
+    new_gaps, known_gaps = _judge_calendar_gaps()
+    print("\n  判断层日历缺口（基准交易日有、panel 无 → 申万当整日无数据）：")
+    if not new_gaps and not known_gaps:
+        print("    ✓ 无缺口")
+    for d in new_gaps:
+        print(f"    ✗ {d}  未登记：核对 ETF/基准当日是否真有行情 →"
+              f" 补数据，或登记到 config.KNOWN_JUDGE_GAPS")
+    for d in known_gaps:
+        print(f"    · {d}  {C.KNOWN_JUDGE_GAPS.get(d, '已登记')}")
+    if known_gaps:
+        print(f"    （已登记 {len(known_gaps)} 个，说明见 docs/数据缺口-判断层整日缺失.md）")
+    return 0 if ((len(uniq) == 1 or tail_lag) and not bad and not new_gaps) else 1
 
 
 # ---------------------------------------------------------------- 命令
@@ -427,6 +501,13 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
         print("  ✗ site 未同步，请检查（data 数据层 / view 展示层）")
         return 1
     print("  ✓ site 已同步（data 数据层 + view 展示层）")
+
+    # 每次更新都自查判断层日历：源端漏一天，系统就会静默跳过一整天
+    new_gaps, _known = _judge_calendar_gaps()
+    if new_gaps:
+        print(f"\n  ⚠ 判断层日历缺口（基准有、panel 无）：{new_gaps}")
+        print("    这些交易日申万整日无数据（ETF/基准当日有行情），系统已整天跳过——"
+              "核对后补数据或登记到 config.KNOWN_JUDGE_GAPS")
     return 0
 
 
@@ -481,12 +562,49 @@ def cmd_verify() -> int:
     # 数据层各层必须同日；展示层（VIEW_etf_modal）也必须同日——ETF 面板更新了、
     # 但走势切片没重建，就会让页面上的标的涨跌停在旧日期（账户已盯市到最新交易日）。
     # 展示层不是一层数据，这里对它做的是「陈旧守卫」而不是依赖链校验。
+    print("[verify] 判断层 / 结算层交易日集合一致 ...")
+    pl = (_jload(os.path.join(ROOT, "cache", "panel.json")) or {}).get("dates") or []
+    el = (_jload(os.path.join(ROOT, "cache", "etf_panel.json")) or {}).get("dates") or []
+    if pl and el:
+        # 允许「结算层尾部落后」（新浪 ETF 比申万晚一晚出数）：结算层日历必须是判断层的**前缀**。
+        # 不允许中间有洞、也不允许结算层多出判断层没有的日期——那才是真错位。
+        if pl[:len(el)] != el:
+            only_p, only_e = sorted(set(pl) - set(el)), sorted(set(el) - set(pl))
+            print(f"  ✗ 交易日集合不是前缀关系：panel {len(pl)} 天 / etf_panel {len(el)} 天")
+            if only_e:
+                print(f"     结算层多出（判断层没有）：{only_e[:8]}{' …' if len(only_e) > 8 else ''}")
+                print("     修：python3 engine/build_etf_panel.py（它按 panel.dates 重建）→ daily --full")
+                return 1
+            print(f"     判断层多出（结算层缺）：{only_p[:8]}{' …' if len(only_p) > 8 else ''}")
+            print("     这不是尾部滞后而是中间洞 → 必须先补齐 ETF 数据")
+            return 1
+        lag = len(pl) - len(el)
+        if lag:
+            print(f"  ⚠ 结算层尾部落后 {lag} 天：ETF 日线到 {el[-1]}，判断层到 {pl[-1]}"
+                  f"（{'、'.join(pl[-lag:])}）")
+            print("     pipeline 已把结论截到结算层末日；新浪出数后重跑 daily 即可补齐")
+        else:
+            print(f"  ✓ 两层同日历：{len(pl)} 个交易日")
+
     print("[verify] 各层水位一致性（含展示层陈旧守卫）...")
     wd = dict(_last_dates(lv))
     wd.pop("L0_realtime_fill", None)          # 兜底日期提示，不是一层数据
     uniq = sorted({d for d in wd.values() if d})
+    # 「结算层尾部落后判断层」是正常状态（新浪 ETF 晚一晚出数）：pipeline 已把结论截到
+    # 结算层末日，所以水位只会落在 {结算末日, 判断末日} 这两个值上。
+    _pl = (_jload(os.path.join(ROOT, "cache", "panel.json")) or {}).get("dates") or []
+    _el = (_jload(os.path.join(ROOT, "cache", "etf_panel.json")) or {}).get("dates") or []
+    tail_lag = bool(_pl and _el and _pl[:len(_el)] == _el and len(_pl) > len(_el))
     if len(uniq) <= 1:
         print(f"  ✓ 各层同日：{uniq[0] if uniq else '—'}")
+    elif tail_lag and set(uniq) <= {_el[-1], _pl[-1]}:
+        print(f"  ⚠ 结算层尾部落后 {len(_pl) - len(_el)} 天（ETF 到 {_el[-1]}，申万到 {_pl[-1]}）——"
+              f"结论已截到 {_el[-1]}，不算不一致；新浪出数后重跑 daily 补齐")
+    elif (pt := _l0_partial_tail())[0] and set(uniq) <= {_pl[-1], pt[0]}:
+        # 过渡态：L0 尾部那天只有零星几只指数有 bar，还没构成交易日（panel 不接收），
+        # 所以结论停在 panel 的 last。等源端把这天出全，重跑 daily 自然推进。
+        print(f"  ⚠ L0 尾部 {pt[0]} 只有 {pt[1]} 只指数有数据，未构成交易日 → "
+              f"结论停在 {_pl[-1]}（源端出全后重跑 daily）")
     else:
         print(f"  ✗ 水位不一致：{uniq}")
         for k, d in sorted(wd.items()):
@@ -495,6 +613,23 @@ def cmd_verify() -> int:
               "build_etf_webdata.py → ark.py daily")
         return 1
 
+    # 判断层日历缺口：源端申万当天整日没数据 → 系统整天跳过（无 day 文件、无结论）。
+    # 已核对的登记在 config.KNOWN_JUDGE_GAPS；未登记的一律失败，禁止静默多出一个洞。
+    print("[verify] 判断层日历缺口（基准交易日 vs panel）...")
+    new_gaps, known_gaps = _judge_calendar_gaps()
+    if new_gaps:
+        print(f"  ✗ {len(new_gaps)} 个未登记缺口：{new_gaps[:10]}"
+              f"{' …' if len(new_gaps) > 10 else ''}")
+        print("     这些交易日基准有行情、panel 没有 = 申万当日整日无数据，系统已整天跳过；")
+        print("     核对 ETF 当日覆盖 → 补数据（口径变更，需批准），或登记到 config.KNOWN_JUDGE_GAPS")
+        return 1
+    print("  ✓ 无未登记缺口" + (f"（已登记 {len(known_gaps)} 个已知空洞，见 "
+                                f"config.KNOWN_JUDGE_GAPS / docs/数据缺口-判断层整日缺失.md）"
+                                if known_gaps else ""))
+
+    # 两层日历必须是同一套交易日：etf_panel.dates 直接取自 panel.dates（build_etf_panel.py）。
+    # 若「判断层补了一天」之后没重建 etf_panel，结算层就少一天——表现为我的持仓的
+    # 「下一交易日」跨过那天、与结论日历对不上；水位只比最后一天，看不出这种错位。
     panel = _jload(os.path.join(ROOT, "cache", "panel.json"))
     if panel and fp:
         # 指纹检查必须在带 numpy 的解释器里跑：pipeline.py 顶层 import numpy，

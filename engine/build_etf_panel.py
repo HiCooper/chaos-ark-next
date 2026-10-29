@@ -173,7 +173,7 @@ def build(refresh: bool = False, verbose: bool = True) -> dict:
             print(f"    {sw:<6} -> {info[sid]['name']:<18} "
                   f"上市 {info[sid]['start']}  日均额 {info[sid]['avg_amount_60']/1e8:.2f}亿")
 
-    # 交易日：与行业指数面板对齐
+    # 交易日：与行业指数面板对齐（下面还会按 ETF 实际数据尾部截断）
     panel = DS.load_panel()
     dates = panel["dates"]
     dset = set(dates)
@@ -184,6 +184,20 @@ def build(refresh: bool = False, verbose: bool = True) -> dict:
         if not s:
             continue
         series[sid] = {d["date"]: d for d in s if d["date"] in dset}
+
+    # 结算层日历绝不能推进到「ETF 还没有行情」的那天：T+1 开盘建仓要用当日开盘价，
+    # 缺价会让建仓被静默跳过、盯市退化成上一收盘价。新浪 ETF 常比申万晚一晚出数，
+    # 所以按 ETF 实际最后一天截断（判断层可以领先，结算层不能）。
+    etf_last = max((d for s in series.values() for d in s), default=None)
+    if etf_last and dates and dates[-1] > etf_last:
+        dropped = [d for d in dates if d > etf_last]
+        dates = [d for d in dates if d <= etf_last]
+        dset = set(dates)
+        for sid in list(series):
+            series[sid] = {d: r for d, r in series[sid].items() if d in dset}
+        if verbose:
+            print(f"  [warn] ETF 日线只到 {etf_last}（判断层已到 {dropped[-1]}）→ "
+                  f"结算层日历截断到 {etf_last}；{'、'.join(dropped)} 等新浪出数后重跑 daily")
 
     if verbose:
         print("  逐日 ETF 选择（已上市 + 流动性最优）：")

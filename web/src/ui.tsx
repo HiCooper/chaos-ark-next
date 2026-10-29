@@ -78,20 +78,37 @@ export function Card(props: { title?: string; extra?: React.ReactNode; children:
   )
 }
 
-/** 数据兜底提示条：申万官方日线滞后时，本轮结论用了哪种兜底数据。 */
-export function DataFillBar({ fill, style }: { fill: any; style?: React.CSSProperties }) {
-  if (!fill || !fill.days) return null
-  const days = Object.keys(fill.days)
-  const method: string = fill.method || 'realtime'
-  const cls = method === 'etf_proxy' ? 'warnbar' : 'warnbar'
+/**
+ * 数据兜底提示条。两种情形要分开说清楚，不能混成一句：
+ *   · fill（tail_fill）：官方**尚未发布**最新交易日 → 用实时行情/ETF 收益补**尾部**；
+ *   · gap（gap_fill）：官方**整日缺数据**（那天的 bar 源端就没有，ETF/指数当日正常交易）
+ *     → 用对应 ETF 的日收益把该日行业指数接上，点位是推算，收益口径真实。
+ */
+export function DataFillBar({ fill, gap, style }:
+  { fill?: any; gap?: any; style?: React.CSSProperties }) {
+  const hasFill = !!fill?.days && Object.keys(fill.days).length > 0
+  const hasGap = !!gap?.days && Object.keys(gap.days).length > 0
+  if (!hasFill && !hasGap) return null
   return (
-    <div className={cls} style={style}>
-      <b>数据含兜底日</b>（{days.join('、')}）：申万官方日线尚未发布（停在 {fill.official_last}），
-      {method === 'etf_proxy'
-        ? <>本轮用<b>对应 ETF 的日收益前推</b>行业指数——收益口径真实、点位为推算，量额为估算。</>
-        : <>本轮收盘价取自申万<b>实时行情</b>（真值），量额为估算。</>}
-      实测兜底代价：单日点位误差中位 ≤0.7%、5 日累计收益偏差中位 ≈0.2%，方向判断不受影响；
-      官方出数后重跑 <code>python3 engine/ark.py daily</code> 会自动用真值覆盖并做盘前复核。
-    </div>
+    <>
+      {hasGap && (
+        <div className="warnbar" style={style}>
+          <b>数据含代理日</b>（{Object.keys(gap.days).join('、')}）：申万当日<b>整日未出数</b>
+          （不是抓取失败——同日 ETF 与基准指数都有行情），该日行业指数与量额由
+          <b>对应 ETF 的当日收益前推</b>：收益口径真实、点位为推算，量额为估算。
+          官方补发后重跑 <code>python3 engine/ark.py daily</code> 会自动用真值覆盖。
+        </div>
+      )}
+      {hasFill && (
+        <div className="warnbar" style={style}>
+          <b>数据含兜底日</b>（{Object.keys(fill.days).join('、')}）：申万官方日线尚未发布（停在 {fill.official_last}），
+          {(fill.method || 'realtime') === 'etf_proxy'
+            ? <>本轮用<b>对应 ETF 的日收益前推</b>行业指数——收益口径真实、点位为推算，量额为估算。</>
+            : <>本轮收盘价取自申万<b>实时行情</b>（真值），量额为估算。</>}
+          实测兜底代价：单日点位误差中位 ≤0.7%、5 日累计收益偏差中位 ≈0.2%，方向判断不受影响；
+          官方出数后重跑 <code>python3 engine/ark.py daily</code> 会自动用真值覆盖并做盘前复核。
+        </div>
+      )}
+    </>
   )
 }

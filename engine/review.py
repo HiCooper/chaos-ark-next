@@ -714,6 +714,18 @@ def build_review(fs: FeatureStore, conclusions: Dict[str, dict], dates: List[str
         # 组合模拟用「完整结算 + 在途」的全集；单笔统计口径维持 settled-only
         trades_exec = trades + open_edge
 
+        # 抄底兜底通道（DIP，默认关闭）：只在「主策略当日零候选」的空窗日补位，
+        # 与主策略共享 K=24 槽位与现金，不额外占额度。详见 engine/dip.py / config.DIP。
+        if (getattr(C, "DIP", {}) or {}).get("enabled"):
+            import dip as _DIP
+            _busy = {t["date"] for t in trades_exec}
+            _dip = _DIP.build_candidates(book, dates, _busy)
+            if _dip:
+                trades_exec = trades_exec + _dip
+                print(f"      [dip] 抄底兜底已启用：+{len(_dip)} 条候选（空窗日 · "
+                      f"20 日跌≤{C.DIP['dd_trigger']:.0%} · 回升>{C.DIP['reb_trigger']:.0%} · "
+                      f"持有 {C.DIP['hold_days']} 日 · 候选分 {C.DIP['composite']:.0f}）")
+
         RC = C.RISK_CONTROL
         PF = C.PORTFOLIO
         # F5 暴露上限（2026-09-23 落参）：宽幅熊市/恐慌环境的硬性仓位上限，

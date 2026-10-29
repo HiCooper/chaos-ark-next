@@ -439,6 +439,33 @@ def build_rules(universe: Optional[dict] = None) -> dict:
                "只剔除「按系统自己的规则就不该给」的结论，不引入任何择时。", filt_items),
         _group("exec", "建仓执行：什么时候买、买多少",
                "行业指数只用于判断方向；一切成交都落在真实可交易 ETF 上。", exec_items),
+        _group("dip", "抄底兜底通道（DIP）：恐慌空窗期的补位",
+               "不产生结论，只产生可执行候选；与主策略共享 K=24 槽位与现金，不预留额度。",
+               [
+                   _item("开启状态", "已启用" if C.DIP.get("enabled") else "已关闭",
+                         "config.DIP.enabled",
+                         "2026-10-29 落参。可用环境变量 ARK_DIP=0 临时关闭做对照。"),
+                   _item("触发条件", f"{C.DIP['dd_window']} 日跌幅 ≤ {C.DIP['dd_trigger']:.0%}"
+                                     f" 且 较近 {C.DIP['reb_window']} 日低点回升 > {C.DIP['reb_trigger']:.0%}",
+                         "config.DIP.dd_* / reb_*",
+                         "只用行业指数的收盘序列（判断层），ETF 只负责成交价。"
+                         "「跌得深」+「跌不动了」两个条件缺一不可：只满足前者时超额胜率 61%、最差 −35%。"),
+                   _item("补位时机", "仅主策略当日零候选的空窗日" if C.DIP.get("only_blank_days") else "任意日",
+                         "config.DIP.only_blank_days",
+                         "空窗日信号 100% 落在 PANIC/DEFEND。不限制时牛市会稀释高价值槽位（样本内 −2.11pp），"
+                         "限制后伤害减半（−1.06pp）。"),
+                   _item("持有期与权重", f"{C.DIP['hold_days']} 个交易日 · 候选分 {C.DIP['composite']:.0f}",
+                         "config.DIP.hold_days / composite",
+                         "持有期对齐统计用的 20 日超额窗口；候选分低 → 预算轻、排序靠后，不抢主策略名额。"),
+                   _item("同标冷却", f"{C.DIP.get('same_sid_cooldown', 0)} 日",
+                         "config.DIP.same_sid_cooldown",
+                         "10-29 实测否决冷却 20 日：候选 302→84、年化 15.56%→14.33%、Calmar 0.563→0.457。"
+                         "「多个行业同时超跌」本身是更强信号，分批建仓是特征不是缺陷。"),
+                   _item("实测效果", "年化 13.87%→15.56% · 回撤 −33.13%→−27.64% · Calmar 0.419→0.563",
+                         "engine/lab_dip.py / lab_dip_wf.py",
+                         "成交 347→455、均投出 51.3%→55.0%；样本外 2023-2026 +2.87pp，"
+                         "样本内 2019-2022 −1.06pp——是「参与度补充器」，不是全天候 alpha。"),
+               ]),
         _group("risk", "配权与风控：持仓怎么分配",
                "从「看对了多少」转到「单笔下多少」。这一层不改变买什么、何时买。", risk_items),
         _group("sell", "卖出判定：什么时候卖",
