@@ -1,0 +1,53 @@
+name: Deploy Pages
+
+# 站点是**纯静态产物**：仓库里的 site/ 就是最终形态（index.html + assets + data + view），
+# 不需要在 CI 里跑 node/python 构建。所以 workflow 只做一件事：
+# 把 site/ 打包成 Pages artifact，再由官方 deploy-pages 发布。
+#
+# 触发条件：
+#   · push 到 main 且改动落在 site/（数据更新、前端重建都会落到这里）
+#   · 手动 workflow_dispatch（想强制重发时用）
+#   · 改本 workflow 文件本身（便于首次上线/调试）
+#
+# 前置（只需一次）：仓库 Settings → Pages → Build and deployment → Source = GitHub Actions。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Pages 发布所需的最小权限：读仓库、写 Pages、用 OIDC 换 token
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个发布；不取消进行中的（避免发布到一半被打断）
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site/ as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

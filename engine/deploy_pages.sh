@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# 把 site/ 发布到 GitHub Pages（gh-pages 分支）。
+# 【备用】把 site/ 发布到 GitHub Pages（gh-pages 分支）。
+#
+# 注意：2026-10-29 起 Pages 的 Source 改为 **GitHub Actions**，正常发布走
+#   .github/workflows/pages.yml（push 到 main 且改动落在 site/ 即自动部署）。
+# 本脚本保留给两种情况：Actions 不可用时的应急发布、或想临时切回分支部署。
 #
 # 为什么不直接让 Pages 读 main：
 #   · GitHub Pages 的分支源只支持仓库根目录或 /docs，而本仓库的站点产物在 site/；
