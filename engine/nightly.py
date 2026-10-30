@@ -144,8 +144,9 @@ def main() -> int:
 
         # 两层都到齐才动手：只要 ETF 没到，结论必被结算层截回，跑了也白跑
         if ol and el and ol >= target and el >= target:
-            log("两层数据已到齐，开始跑 daily（官方真值，无估算）")
-            rc, out = run([PY, "-u", os.path.join(ROOT, "engine", "ark.py"), "daily"])
+            log("两层数据已到齐，开始跑 daily --official（官方真值，无估算）")
+            rc, out = run([PY, "-u", os.path.join(ROOT, "engine", "ark.py"),
+                           "daily", "--official"])
             if rc != 0:
                 log("✗ daily 失败，最后输出：\n" + out)
             else:

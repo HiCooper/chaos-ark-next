@@ -41,6 +41,8 @@ SOURCE_ETF_TX = "tencent.qt.gtimg.cn(腾讯批量快照)"
 SOURCE_BENCH = "akshare.stock_zh_index_daily(新浪)"
 SOURCE_CATALOG = "akshare.sw_index_*_info(申万宏源官方)"
 SOURCE_SW_RT = "akshare.index_realtime_sw(申万实时行情)"
+SOURCE_SW_SNAP = "swsresearch.index_publish/current(申万批量快照)"
+SOURCE_BENCH_SNAP = "hq.sinajs.cn(新浪实时行情)"
 # 官方日线滞后时，最多用实时行情补最近几天（再往前的日子没有可用的昨收，补不了）
 RT_FILL_MAX_DAYS = 2
 
@@ -87,6 +89,30 @@ BENCH_SINA = {  # config.BENCHMARKS 的 market.code -> 新浪符号
     "1.000001": "sh000001", "1.000300": "sh000300", "0.399006": "sz399006",
     "1.000852": "sh000852", "1.000905": "sh000905",
 }
+
+# ---------------------------------------------------------------- 申万批量快照
+# 官方日线接口 index_publish/trend/ 不支持任何区间/分页参数（page/page_size、
+# startdate/enddate/begin_date/type 实测全部无效），恒返 6481 行 / 1.47MB，
+# 120 个指数 = 约 365MB / 40 分钟。而同一套 API 的 current/ 是批量快照：
+# 2 次请求（一级行业 31 + 二级行业 124）、约 24KB，拿到全部指数当日 OHLC+量额。
+#
+# 字段口径（对照 akshare.index_realtime_sw 的列映射，并用官方 L0 反推验证）：
+#   l3=昨收  l4=今开  l5=成交额  l6=最高  l7=最低  l8=最新价  l11=成交量
+#   l5 与 l11 都恰好是官方口径的 100 倍 —— 即 l5 单位百万元(=亿元×100)、
+#   l11 单位百万股(=亿股×100)。115 个指数实测：l5/(100×官方amount) 中位 1.07、
+#   l11/(100×官方volume) 中位 1.11、两者与「当日放量」互相自洽。
+#
+# 关键限制：接口不带日期，且只给「当日」。所以快照只能用于补**最新的一个交易日**，
+# 无法重建历史。补出来的行一律带 est 标记，官方全量抓取时 overwrite_est 覆盖。
+SW_SNAP_URL = "https://www.swsresearch.com/institute-sw/api/index_publish/current/"
+SW_SNAP_LEVELS = ("一级行业", "二级行业")
+SW_SNAP_AMT_DIV = 100.0    # -> 亿元，与官方 L0 amount 同口径
+SW_SNAP_VOL_DIV = 100.0    # -> 亿股，与官方 L0 volume 同口径
+# 昨收与 L0 某日收盘的一致率门槛：低于它说明快照与本地历史对不上（源改版/口径变了），
+# 不做增量、退回官方全量，宁可慢也不写错。
+SW_SNAP_MIN_AGREE = 0.90
+# 单日涨跌幅超过该值视为异常值，剔除（防止停牌复牌/指数重构日把 panel 带偏）
+SW_SNAP_MAX_MOVE = 0.25
 
 # EM 白名单名 -> 申万2021官方名的确定性映射（None = 无对应官方指数，跳过）。
 # 绝大多数差异只是 Ⅱ/Ⅲ 后缀（自动剥除即可），这里只列真正改名的。
@@ -201,6 +227,230 @@ def fetch_bench_daily(market_code: str, refresh: bool = False) -> Optional[List[
         except Exception:
             time.sleep(1.5 * (attempt + 1))
     return cached
+
+
+# ---------------------------------------------------------------- 增量抓取
+def fetch_sw_snapshot(verbose: bool = False) -> Dict[str, dict]:
+    """申万 current/ 批量快照 -> {code: 原始行}。2 次请求拿全部一级+二级行业。"""
+    try:
+        requests.packages.urllib3.disable_warnings()
+    except Exception:
+        pass
+    out: Dict[str, dict] = {}
+    for lvl in SW_SNAP_LEVELS:
+        got = 0
+        for attempt in range(3):
+            try:
+                r = requests.get(SW_SNAP_URL,
+                                 params={"page": "1", "page_size": "1000",
+                                         "indextype": lvl},
+                                 headers={"User-Agent": _UA}, verify=False, timeout=60)
+                rows = (r.json().get("data") or {}).get("results") or []
+                for x in rows:
+                    if x.get("swindexcode"):
+                        out[x["swindexcode"]] = x
+                got = len(rows)
+                break
+            except Exception:
+                time.sleep(1.2 * (attempt + 1))
+        if verbose:
+            print(f"    快照 {lvl}: {got} 条")
+    return out
+
+
+def _snap_bars(raw: Dict[str, dict]) -> Dict[str, dict]:
+    """快照原始行 -> {code: {prev_close,open,high,low,close,volume,amount}}，已换算单位。"""
+    out: Dict[str, dict] = {}
+    for code, x in raw.items():
+        try:
+            bar = {
+                "prev_close": float(x["l3"]),
+                "open": float(x["l4"]),
+                "high": float(x["l6"]),
+                "low": float(x["l7"]),
+                "close": float(x["l8"]),
+                "amount": float(x["l5"]) / SW_SNAP_AMT_DIV,
+                "volume": float(x["l11"]) / SW_SNAP_VOL_DIV,
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if min(bar["open"], bar["high"], bar["low"], bar["close"]) <= 0:
+            continue
+        if bar["high"] < max(bar["open"], bar["close"]) or bar["low"] > min(bar["open"], bar["close"]):
+            continue          # OHLC 自相矛盾，丢弃
+        if bar["prev_close"] > 0 and abs(bar["close"] / bar["prev_close"] - 1.0) > SW_SNAP_MAX_MOVE:
+            continue          # 单日异动（复牌/重构），交给官方全量
+        out[code] = bar
+    return out
+
+
+def _market_date() -> tuple:
+    """从新浪实时行情取「最近一个已收盘交易日」-> (date, closed)。
+
+    快照接口本身不带日期，必须由外部给：否则无从知道这批数字属于哪一天。
+    取 5 个基准的行情戳，全部一致才采用（任一不一致说明正在切换日界）。
+    """
+    codes = ",".join(BENCH_SINA[mc] for mc in C.BENCHMARKS)
+    try:
+        r = requests.get("https://hq.sinajs.cn/list=" + codes,
+                         headers={"Referer": "https://finance.sina.com.cn"}, timeout=15)
+        r.encoding = "gbk"
+    except Exception:
+        return None, False
+    stamps = set()
+    for line in r.text.strip().split("\n"):
+        if '"' not in line:
+            continue
+        b = line.split('"')[1].split(",")
+        if len(b) < 32 or not b[30]:
+            continue
+        d, hhmm = b[30], b[31]
+        try:
+            if (int(hhmm[0:2]), int(hhmm[3:5])) < (15, 0):
+                return d, False      # 未收盘，当日 bar 还不成立
+        except (ValueError, IndexError):
+            return None, False
+        stamps.add(d)
+    if len(stamps) != 1:
+        return None, False
+    return stamps.pop(), True
+
+
+def fetch_bench_snapshot() -> Dict[str, dict]:
+    """新浪实时行情 -> {market_code: bar}，只给已收盘且日期有效的那批。"""
+    codes = ",".join(BENCH_SINA[mc] for mc in C.BENCHMARKS)
+    try:
+        r = requests.get("https://hq.sinajs.cn/list=" + codes,
+                         headers={"Referer": "https://finance.sina.com.cn"}, timeout=15)
+        r.encoding = "gbk"
+    except Exception:
+        return {}
+    sym2mc = {v: k for k, v in BENCH_SINA.items()}
+    out: Dict[str, dict] = {}
+    for line in r.text.strip().split("\n"):
+        if '"' not in line:
+            continue
+        sym = line.split("=")[0].split("_")[-1].strip()
+        b = line.split('"')[1].split(",")
+        mc = sym2mc.get(sym)
+        if not mc or len(b) < 32:
+            continue
+        try:
+            o, c, hi, lo = float(b[1]), float(b[3]), float(b[4]), float(b[5])
+            if min(o, c, hi, lo) <= 0:
+                continue
+            out[mc] = {"date": b[30], "open": o, "close": c, "high": hi, "low": lo,
+                       "volume": float(b[8] or 0.0), "amount": 0.0, "est": True,
+                       "note": "新浪实时行情快照；官方日线出数后由 overwrite_est 覆盖"}
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def _tail_hist(code: str, n: int = 6) -> Dict[str, dict]:
+    rows = RS.get("sw_index", code)
+    if not rows:
+        return {}
+    return {r["date"]: r for r in rows[-n:]}
+
+
+def apply_incremental(verbose: bool = True) -> dict:
+    """把当日快照写进 L0（est 标记），让 panel 不必为追加 1 天而重下 365MB。
+
+    返回 {"ok": bool, "reason": str, "date": ..., "written": n, ...}。
+    ok=False 时调用方应退回官方全量抓取（慢但绝对可靠）。
+    """
+    rep = {"ok": False, "reason": "", "date": None, "written": 0,
+           "skipped": 0, "agree": 0.0, "bench": 0}
+
+    mdate, closed = _market_date()
+    if not closed:
+        rep["reason"] = f"未收盘或无有效行情戳（date={mdate}）"
+        return rep
+
+    raw = fetch_sw_snapshot(verbose=verbose)
+    bars = _snap_bars(raw)
+    if len(bars) < 50:
+        rep["reason"] = f"快照条目过少（{len(bars)}），源可能异常"
+        return rep
+
+    hist = {c: _tail_hist(c) for c in bars}
+    hist = {c: h for c, h in hist.items() if h}
+    if len(hist) < 50:
+        rep["reason"] = f"L0 已有历史过少（{len(hist)}），首建应走全量"
+        return rep
+
+    # 候选日 = 本地历史里最近的几个日期；用「快照昨收 == 该日收盘」的一致率定位快照属于哪天
+    cand: Dict[str, int] = {}
+    for c, h in hist.items():
+        for d in sorted(h)[-3:]:
+            cand[d] = cand.get(d, 0) + 1
+    if not cand:
+        rep["reason"] = "无候选日期"
+        return rep
+    scored = []
+    for d in cand:
+        agree = n = 0
+        for c, h in hist.items():
+            if d not in h:
+                continue
+            n += 1
+            if abs(h[d]["close"] - bars[c]["prev_close"]) <= 1e-6:
+                agree += 1
+        if n >= 50:
+            scored.append((agree / n, d, agree, n))
+    if not scored:
+        rep["reason"] = "候选日期可用样本不足"
+        return rep
+    ratio, prev, agree, n = max(scored)
+    rep["agree"] = round(ratio, 4)
+    if ratio < SW_SNAP_MIN_AGREE:
+        rep["reason"] = f"快照昨收与本地历史对上率仅 {ratio:.1%}（<{SW_SNAP_MIN_AGREE:.0%}）"
+        return rep
+    if mdate <= prev:
+        rep.update(ok=True, reason=f"无新交易日（快照对应 {prev}，本地已到 {mdate}）",
+                   date=prev)
+        return rep
+    # 幂等：已经写过这一天（例如同日重跑）就不再重复落盘
+    have = sum(1 for h in hist.values() if mdate in h)
+    if have >= 0.9 * len(hist):
+        rep.update(ok=True, date=mdate,
+                   reason=f"{mdate} 已在 L0（{have}/{len(hist)} 个标的），无需增量")
+        return rep
+
+    written = skipped = 0
+    for c, bar in bars.items():
+        h = hist.get(c)
+        if not h or prev not in h:
+            skipped += 1        # 该指数本地没有 prev 这天，无法确认连续性 -> 交给全量
+            continue
+        row = {"date": mdate, "open": bar["open"], "close": bar["close"],
+               "high": bar["high"], "low": bar["low"],
+               "volume": round(bar["volume"], 8), "amount": round(bar["amount"], 8),
+               "est": True,
+               "note": "申万 current/ 批量快照；官方日线出数后由 overwrite_est 覆盖"}
+        RS.put("sw_index", c, [row], SOURCE_SW_SNAP, overwrite_est=True,
+               note="官方日线 T+1 未出时的当日快照增量（est，可被官方覆盖）")
+        written += 1
+
+    # 基准同步推进：否则环境档位缺当日收益，结论会被截回前一天
+    bn = 0
+    for mc, b in fetch_bench_snapshot().items():
+        rows = RS.get("bench", mc) or []
+        if not rows:
+            continue
+        if b["date"] <= rows[-1]["date"]:
+            continue
+        RS.put("bench", mc, [{k: b[k] for k in
+                             ("date", "open", "close", "high", "low", "volume", "amount")}
+                            | {"est": True}], SOURCE_BENCH_SNAP, overwrite_est=True,
+               note="新浪实时行情快照（est），官方日线出数后覆盖")
+        bn += 1
+
+    rep.update(ok=written > 0, written=written, skipped=skipped, date=mdate,
+               prev=prev, bench=bn,
+               reason=f"{prev} -> {mdate}，写入 {written} 个指数（{skipped} 个跳过）+ {bn} 个基准")
+    return rep
 
 
 def _fetch_etf_range(secid: str, bars: int) -> Optional[List[dict]]:
@@ -881,8 +1131,26 @@ def fill_interior_holes(series: Dict[str, Dict[str, dict]],
 
 
 # ---------------------------------------------------------------- 面板
-def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
-    """从 L0（必要时先抓）组装 panel.json，结构与东财版完全同构。"""
+def build_panel(refresh: bool = False, full: bool = False, verbose: bool = True) -> dict:
+    """从 L0（必要时先抓）组装 panel.json，结构与东财版完全同构。
+
+    refresh=True 且 full=False：先走「批量快照增量」（2~3 次请求、秒级），把当日
+    bar 以 est 标记写进 L0，再离线组装 panel —— 这是日常路径。
+    full=True：官方日线全量重下（120 个指数 × 20 年，约 365MB / 40 分钟），
+    同时用 overwrite_est 把此前的估算行换成官方真值 —— 这是校准路径。
+    增量失败（源改版、对不上历史等）时自动退回全量，不会静默少一天。
+    """
+    incr = None
+    if refresh and not full:
+        if verbose:
+            print("  增量抓取：申万批量快照（current/）...")
+        incr = apply_incremental(verbose=verbose)
+        if verbose:
+            print(f"    {'✓' if incr['ok'] else '✗'} {incr['reason']}")
+        if not incr["ok"] and "无新交易日" not in incr["reason"]:
+            print("  [warn] 增量不可用，退回官方全量重下（慢）...")
+            full = True
+
     catalog = fetch_catalog(refresh=refresh)
     universe = build_universe(catalog)
     if verbose:
@@ -892,8 +1160,26 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
     series: Dict[str, Dict[str, dict]] = {}
     meta: Dict[str, dict] = {}
     missing: List[str] = []
+    # 增量只覆盖一级/二级行业；三级行业（85xxxx）快照里没有，会落后一天。
+    # 对这类「落后于增量日」的标的做定向官方补抓（单只约 10s，通常 3~5 只），
+    # 而不是为了它们把 120 只全部重下。
+    target = incr["date"] if (incr and incr.get("ok") and incr.get("date")) else None
+    patched: List[str] = []
+    lagging: List[str] = []      # 快照未覆盖且官方当日也没出（通常是三级行业）
+    official_dead = False        # 试过一次官方补抓仍不达标，就不再为每个标的各等 10s
     for i, (code, u) in enumerate(universe.items()):
-        recs = fetch_sw_daily(code, refresh=refresh)
+        recs = fetch_sw_daily(code, refresh=full)
+        if target and recs and recs[-1]["date"] < target:
+            if official_dead:
+                lagging.append(code)
+            else:
+                fresh = fetch_sw_daily(code, refresh=True)
+                if fresh and fresh[-1]["date"] >= target:
+                    recs = fresh
+                    patched.append(code)
+                else:
+                    official_dead = True
+                    lagging.append(code)
         if not recs:
             missing.append(f"{code} {u['name']}")
             continue
@@ -901,15 +1187,21 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
         meta[code] = {"name": u["name"], "level": u["level"]}
         if verbose and (i + 1) % 25 == 0:
             print(f"  指数进度 {i+1}/{len(universe)}")
-        time.sleep(0.2)
+        if full:
+            time.sleep(0.2)      # 全量是打网络；增量只是读本地文件，不必节流
 
     bench_series = {}
     for mc, name in C.BENCHMARKS.items():
-        recs = fetch_bench_daily(mc, refresh=refresh)
+        recs = fetch_bench_daily(mc, refresh=full)
         if recs:
             bench_series[mc] = {r["date"]: r for r in recs}
             meta[mc] = {"name": name, "level": "BENCH"}
     series.update(bench_series)
+    if verbose and patched:
+        print(f"  [info] 定向补抓 {len(patched)} 个快照未覆盖的标的: {patched[:6]}")
+    if verbose and lagging:
+        print(f"  [info] {len(lagging)} 个标的当日无数据（快照未覆盖且官方未出，"
+              f"多为三级行业）: {lagging[:6]}")
     if verbose and missing:
         print(f"  [warn] 抓取失败 {len(missing)} 个: {missing[:8]}")
 
@@ -935,6 +1227,7 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
         "series": series,
         "tail_fill": rt_fill,
         "gap_fill": gap_fill,
+        "incremental": incr,
     }
     os.makedirs(C.CACHE_DIR, exist_ok=True)
     with open(f"{C.CACHE_DIR}/panel.json", "w", encoding="utf-8") as f:
@@ -946,5 +1239,4 @@ def build_panel(refresh: bool = False, verbose: bool = True) -> dict:
 
 
 if __name__ == "__main__":
-    refresh = "--refresh" in sys.argv
-    build_panel(refresh=refresh)
+    build_panel(refresh="--refresh" in sys.argv, full="--full" in sys.argv)

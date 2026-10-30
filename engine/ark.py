@@ -533,7 +533,8 @@ def _report_today_diff(prev: dict, prev_sig: dict, now: dict) -> None:
         print(f"    ⚠ 其中 {est} 用了兜底数据（方式 {_m}）——官方出数后重跑本命令即自动覆盖并复核")
 
 
-def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
+def cmd_daily(tail: int | None, full: bool, skip_fetch: bool,
+              official_fetch: bool = False) -> int:
     py = pick_python()
     print(f"[daily] 解释器: {py}")
     lv0 = water_level()
@@ -542,8 +543,12 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
         print(f"    {k:18s} {d}")
 
     if not skip_fetch:
-        print("[daily/4] 抓取申万指数 + 基准（全量重下 + merge-append）...")
-        if _run(py, "datasource_sw.py", ["--refresh"], "daily_panel") != 0:
+        # 默认走批量快照增量（秒级，写 est 行）；--official 走官方日线全量重下
+        # （约 40 分钟，同时把 est 行换成真值）。夜间无人值守时应当用 --official。
+        sw_args = ["--refresh"] + (["--full"] if official_fetch else [])
+        print(f"[daily/4] 抓取申万指数 + 基准"
+              f"（{'官方全量重下' if official_fetch else '批量快照增量'} + merge-append）...")
+        if _run(py, "datasource_sw.py", sw_args, "daily_panel") != 0:
             raise SystemExit("面板抓取失败（数据源未出数时属正常，可稍后重跑）")
         print("[daily/4] 抓取 ETF 日线 ...")
         if _run(py, "build_etf_panel.py", ["--refresh"], "daily_etf") != 0:
@@ -606,6 +611,38 @@ def cmd_daily(tail: int | None, full: bool, skip_fetch: bool) -> int:
         print("    这些交易日申万整日无数据（ETF/基准当日有行情），系统已整天跳过——"
               "核对后补数据或登记到 config.KNOWN_JUDGE_GAPS")
     return 0
+
+
+def _est_tail(days: int = 4) -> dict:
+    """统计 L0 尾部带 est 标记的行 -> {date: {"sw": n, "bench": n}}。
+
+    日常增量用申万批量快照补当日（官方日线 T+1 才发），落盘即带 est。这些行在
+    官方出数后会被 `daily --official` 用 overwrite_est 覆盖。此函数只负责让它们
+    **可见**：估算值可以存在，但不可以悄悄变成长久事实。
+    """
+    panel = _jload(os.path.join(ROOT, "cache", "panel.json")) or {}
+    dates = panel.get("dates") or []
+    keep = set(dates[-days:]) if dates else set()
+    if not keep:
+        return {}
+    out: dict = {}
+    root = os.path.join(ROOT, "data", "raw")
+    for kind, tag in (("sw_index", "sw"), ("bench", "bench")):
+        d = os.path.join(root, kind)
+        if not os.path.isdir(d):
+            continue
+        for fn in os.listdir(d):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, fn), "r", encoding="utf-8") as f:
+                    rows = json.load(f)
+            except Exception:
+                continue
+            for row in rows[-days - 2:]:
+                if row.get("est") and row.get("date") in keep:
+                    out.setdefault(row["date"], {"sw": 0, "bench": 0})[tag] += 1
+    return out
 
 
 def cmd_verify() -> int:
@@ -760,6 +797,26 @@ def cmd_verify() -> int:
         print(f"  {'✓' if ok else '✗'} features.npz 与 panel.json 指纹{'一致' if ok else '不一致（陈旧，需 --refresh）'}")
         if not ok:
             return 1
+
+    # 估算行可见性：日常增量把「官方日线还没出的当日」用申万批量快照补进 L0（est）。
+    # 这些行在官方出数后会被 --official 覆盖。若 est 行一直存在且停在旧日期，说明
+    # 夜间官方校准没跑——必须报出来，否则「估算值」会静默变成长期事实。
+    est = _est_tail(days=4)
+    print("[verify] 估算行（快照增量 est）...")
+    if not est:
+        print("  ✓ L0 尾部无估算行（全部为官方真值）")
+    else:
+        _panel = _jload(os.path.join(ROOT, "cache", "panel.json")) or {}
+        _last = (_panel.get("dates") or [""])[-1]
+        late = [d for d in est if d < _last]
+        print("  ⚠ L0 尾部存在估算行：")
+        for d in sorted(est):
+            print(f"      {d}: 指数 {est[d]['sw']} 行 / 基准 {est[d]['bench']} 行")
+        if late:
+            print(f"  ⚠ {len(late)} 个日期的估算行已过期仍未校准 —— 夜间应用 "
+                  f"`ark.py daily --official` 覆盖为官方真值")
+        else:
+            print("      （当日为快照增量，属预期：官方日线 T+1 出数后由 --official 覆盖）")
     return 0
 
 
@@ -1004,7 +1061,8 @@ def main():
         raise SystemExit(cmd_init())
     if cmd == "daily":
         tail = int(args[args.index("--tail") + 1]) if "--tail" in args else None
-        raise SystemExit(cmd_daily(tail, "--full" in args, "--skip-fetch" in args))
+        raise SystemExit(cmd_daily(tail, "--full" in args, "--skip-fetch" in args,
+                                   "--official" in args))
     if cmd == "verify":
         raise SystemExit(cmd_verify())
     if cmd == "selftest":
