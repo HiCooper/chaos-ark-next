@@ -53,15 +53,32 @@ def load_fund_names() -> Dict[str, str]:
     return m
 
 
-def scan_etfs(refresh: bool = False, verbose: bool = True) -> Dict[str, dict]:
-    """抓取全部候选 ETF，记录上市日与流动性。行情走新浪（东财被限流时可用）。"""
+def scan_etfs(refresh: bool = False, verbose: bool = True,
+              recent_bars: Optional[int] = None) -> Dict[str, dict]:
+    """抓取全部候选 ETF，记录上市日与流动性。
+
+    recent_bars 给定时走增量（东财只取最近 N 根），否则全量（新浪）。
+    """
     info: Dict[str, dict] = {}
     names = load_fund_names()
     cands = EM.all_etf_secids()
+
+    # 增量主路径：一次批量拿全部 ETF 的当日快照（含成交额），约 4 次请求覆盖全池，
+    # 这是替代"每只 ETF 重下 20 年历史"的关键——体量从 ~170MB 降到 ~70KB。
+    snaps: Dict[str, dict] = {}
+    if refresh and recent_bars:
+        t0 = time.time()
+        snaps = DSW.fetch_etf_snapshot_batch([sid for sid, _ in cands])
+        if verbose:
+            dates = sorted({v["date"] for v in snaps.values()})
+            print(f"  批量快照：{len(snaps)}/{len(cands)} 个标的  {time.time()-t0:.1f}s  "
+                  f"日期={dates}")
+
     for k, (sid, name) in enumerate(cands):
         code = sid.split(".")[-1]
         name = names.get(code, name)
-        s = DSW.fetch_etf_daily(sid, refresh=refresh)
+        s = DSW.fetch_etf_daily(sid, refresh=refresh, recent_bars=recent_bars,
+                                snapshot=snaps.get(sid))
         if not s:
             if verbose:
                 print(f"  [fail] {sid} {name}")
@@ -158,8 +175,10 @@ def _build_choice_for(keys: List[str], dates: List[str], series: Dict[str, dict]
     return choice
 
 
-def build(refresh: bool = False, verbose: bool = True) -> dict:
-    info = scan_etfs(refresh=refresh, verbose=verbose)
+def build(refresh: bool = False, verbose: bool = True, full: bool = False) -> dict:
+    # 日常增量：只回看最近 N 根 bar；--full 或首次建档才走全量
+    recent_bars = None if full else DSW.ETF_INCREMENTAL_BARS
+    info = scan_etfs(refresh=refresh, verbose=verbose, recent_bars=recent_bars)
     keys = EM.all_keys()
     sw_to_etf: Dict[str, str] = {}
     for sw in keys:
@@ -226,7 +245,8 @@ def build(refresh: bool = False, verbose: bool = True) -> dict:
 
 if __name__ == "__main__":
     refresh = "--refresh" in sys.argv
-    r = build(refresh=refresh)
+    full = "--full" in sys.argv          # 强制全量重建（首次建档 / 排查数据异常用）
+    r = build(refresh=refresh, full=full)
     print("SAVED", OUT_PATH)
     print("行业覆盖:", len(r["sw_to_etf"]))
     # 覆盖度演进

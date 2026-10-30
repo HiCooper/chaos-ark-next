@@ -342,6 +342,20 @@ def _l0_partial_tail():
     return last, sum(1 for v in sw.values() if (v.get("last") or "") >= last)
 
 
+def _l0_etf_ahead(wd: dict, pl: list) -> bool:
+    """L0_etf 领先下游一格：ETF 源当日收盘即可取，申万官方日线要 T+1。
+
+    这不是错位：etf_panel 的日历直接取自 panel.dates，超前的 bar 只是增量缓存，
+    要等申万补上同一天才会进入面板与结论。条件要求其余各层完全齐panel末日，
+    所以只能容纳"ETF 单独领先"这一种情形，不会掩盖真正的层间错位。
+    """
+    etf_last = wd.get("L0_etf")
+    if not (etf_last and pl) or etf_last <= pl[-1]:
+        return False
+    others = {k: d for k, d in wd.items() if k != "L0_etf" and d}
+    return bool(others) and set(others.values()) == {pl[-1]}
+
+
 def _judge_calendar_gaps():
     """判断层「整日缺口」：基准（新浪，最全）是交易日、panel 里却没有的那些天。
 
@@ -688,6 +702,11 @@ def cmd_verify() -> int:
         # 所以结论停在 panel 的 last。等源端把这天出全，重跑 daily 自然推进。
         print(f"  ⚠ L0 尾部 {pt[0]} 只有 {pt[1]} 只指数有数据，未构成交易日 → "
               f"结论停在 {_pl[-1]}（源端出全后重跑 daily）")
+    elif _l0_etf_ahead(wd, _pl):
+        # ETF 源（腾讯快照/东财）当日收盘即可取，申万官方日线要 T+1，
+        # 于是 L0_etf 会天然领先一格。这是增量缓存，没有进入 etf_panel / 结论。
+        print(f"  ⚠ L0_etf 已到 {wd['L0_etf']}，领先判断层 {_pl[-1]} 一格"
+              f"（ETF 源当日可取 / 申万官方 T+1）—— 增量缓存，未进入结论")
     else:
         print(f"  ✗ 水位不一致：{uniq}")
         for k, d in sorted(wd.items()):

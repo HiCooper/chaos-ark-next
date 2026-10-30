@@ -28,17 +28,60 @@ import sys
 import time
 from typing import Dict, List, Optional
 
+import requests
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config as C  # noqa: E402
 import rawstore as RS  # noqa: E402
 
 SOURCE_SW = "akshare.index_hist_sw(申万宏源官方)"
 SOURCE_ETF = "akshare.fund_etf_hist_sina(新浪)"
+SOURCE_ETF_EM = "akshare.fund_etf_hist_em(东财,区间)"
+SOURCE_ETF_TX = "tencent.qt.gtimg.cn(腾讯批量快照)"
 SOURCE_BENCH = "akshare.stock_zh_index_daily(新浪)"
 SOURCE_CATALOG = "akshare.sw_index_*_info(申万宏源官方)"
 SOURCE_SW_RT = "akshare.index_realtime_sw(申万实时行情)"
 # 官方日线滞后时，最多用实时行情补最近几天（再往前的日子没有可用的昨收，补不了）
 RT_FILL_MAX_DAYS = 2
+
+# ETF 日常增量：只取最近 N 根 bar，而不是重下全历史。
+# N=15：15 个交易日足以跨过春节/国庆 7~9 天连休，请求体量仍是几百字节。
+# 用 lmt（根数）而非 beg/end：实测 beg 会被对端直接断连，lmt 稳定。
+ETF_INCREMENTAL_BARS = 15
+
+
+class _EmBreaker:
+    """东财熔断器：连续失败达到阈值后，本轮直接跳过东财、整体回落新浪。
+
+    东财对密集请求很敏感（实测短时间 20 余次即被断连，90s 未恢复）。若不做熔断，
+    123 个 ETF 会各自重试 3 次才回退，反而比原来更慢。这里只记"连续失败"，
+    任意一次成功即清零。
+    """
+    THRESHOLD = 3
+
+    def __init__(self) -> None:
+        self.streak = 0
+
+    @property
+    def open(self) -> bool:
+        return self.streak >= self.THRESHOLD
+
+    def hit(self) -> None:
+        self.streak += 1
+
+    def reset(self) -> None:
+        self.streak = 0
+
+
+EM_BREAKER = _EmBreaker()
+
+# 东财日K：akshare 的 fund_etf_hist_em 不带 User-Agent，会被对端直接断连
+# （实测 RemoteDisconnected），且还要多发一次市场识别请求。这里直连：
+# 我们本来就持有 secid，一次请求即可，且带 UA 后稳定。
+EM_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+EM_UT = "7eea3edcaed734bea9cbfc24409ed989"
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 BENCH_SINA = {  # config.BENCHMARKS 的 market.code -> 新浪符号
     "1.000001": "sh000001", "1.000300": "sh000300", "0.399006": "sz399006",
@@ -160,11 +203,149 @@ def fetch_bench_daily(market_code: str, refresh: bool = False) -> Optional[List[
     return cached
 
 
-def fetch_etf_daily(secid: str, refresh: bool = False) -> Optional[List[dict]]:
-    """东财 secid（1.512400 / 0.159915）-> 新浪 ETF 日K。amount 单位: 元。"""
+def _fetch_etf_range(secid: str, bars: int) -> Optional[List[dict]]:
+    """东财日K -> 最近 bars 根 bar。
+
+    注意：东财对密集请求非常敏感（实测短时间 20 余次即被断连，13 分钟未恢复），
+    因此它只是**兜底**路径，默认走腾讯批量快照（fetch_etf_snapshot_batch）。
+    """
+    if EM_BREAKER.open:
+        return None
+    params = {
+        "secid": secid, "klt": "101", "fqt": "0",   # 日线、不复权
+        "lmt": str(bars), "end": "20500101", "ut": EM_UT,
+        "fields1": "f1,f2,f3",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57",    # 日期,开,收,高,低,量,额
+    }
+    # 只重试 2 次：失败通常是对端限流断连，重试不会自愈，快速交给熔断更划算
+    for attempt in range(2):
+        try:
+            r = requests.get(EM_KLINE_URL, params=params, timeout=20,
+                             headers={"User-Agent": _UA})
+            d = (r.json() or {}).get("data") or {}
+            out: List[dict] = []
+            for k in (d.get("klines") or []):
+                p = k.split(",")
+                if len(p) < 7:
+                    continue
+                out.append({
+                    "date": p[0][:10],
+                    "open": float(p[1]), "close": float(p[2]),
+                    "high": float(p[3]), "low": float(p[4]),
+                    "volume": float(p[5]) * 100,  # 东财「手」-> 新浪「股」口径
+                    "amount": float(p[6]),
+                })
+            if out:
+                EM_BREAKER.reset()
+                return out
+        except Exception:
+            time.sleep(1.0 * (attempt + 1))
+    EM_BREAKER.hit()
+    return None
+
+
+TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+TENCENT_BATCH = 40      # 单次批量请求的代码数（实测 40 个约 22KB）
+
+
+def fetch_etf_snapshot_batch(secids: List[str]) -> Dict[str, dict]:
+    """腾讯批量实时行情 -> {secid: 当日完整 bar}。这是 ETF 日常增量的主路径。
+
+    为什么用它：一次请求覆盖 40 个标的、约 22KB，直接给出完整 OHLC + 成交量
+    （手）+ 成交额（万元），不依赖任何需要重下全历史的接口。实测连续请求稳定，
+    不像东财那样一密集就断连。
+
+    口径：成交量 ×100 对齐新浪「股」；成交额 ×10000 转「元」。两者已与东财/新浪
+    同日数据核对一致。
+    只对**收盘后**的调用有意义——盘中调用拿到的是实时价，会把当日 bar 写错，
+    所以这里用日期 + 时间戳双重校验，未收盘（时间戳早于 15:00）的标的直接丢弃。
+    """
+    out: Dict[str, dict] = {}
+    for i in range(0, len(secids), TENCENT_BATCH):
+        chunk = secids[i:i + TENCENT_BATCH]
+        qs = ",".join(("sh" if s.startswith("1.") else "sz") + s.split(".")[-1]
+                      for s in chunk)
+        try:
+            r = requests.get(TENCENT_QUOTE_URL + qs, timeout=20,
+                             headers={"User-Agent": _UA,
+                                      "Referer": "https://gu.qq.com/"})
+            r.encoding = "gbk"
+            for line in r.text.split(";"):
+                if "=" not in line or '"' not in line:
+                    continue
+                body = line.split('"')[1].split("~")
+                if len(body) < 38:
+                    continue
+                # 行首形如 v_sh510300=...；body[2] 是 6 位代码（510300），
+                # 市场前缀必须从行首取，不能靠代码首位猜。
+                head = line.split("=")[0].strip()
+                sym6 = head.split("_")[-1]              # sh510300 / sz159915
+                code, stamp = body[2], body[30]         # 代码、yyyymmddHHMMSS
+                if len(stamp) < 14 or not sym6.startswith(("sh", "sz")):
+                    continue
+                d = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+                hh, mm = int(stamp[8:10]), int(stamp[10:12])
+                if (hh, mm) < (15, 0):                 # 未收盘，当日 bar 还不成立
+                    continue
+                sid = ("1." if sym6.startswith("sh") else "0.") + code
+                try:
+                    out[sid] = {
+                        "date": d,
+                        "open": float(body[5]), "close": float(body[3]),
+                        "high": float(body[33]), "low": float(body[34]),
+                        "volume": float(body[6]) * 100,     # 手 -> 股
+                        "amount": float(body[37]) * 10000,  # 万元 -> 元
+                    }
+                except (ValueError, IndexError):
+                    continue
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return out
+
+
+def fetch_etf_daily(secid: str, refresh: bool = False,
+                    recent_bars: Optional[int] = None,
+                    snapshot: Optional[dict] = None) -> Optional[List[dict]]:
+    """东财 secid（1.512400 / 0.159915）-> ETF 日K，不复权，amount 单位: 元。
+
+    增量优先级（都是"只补新交易日"，不重下历史）：
+      1. snapshot：腾讯批量快照，当日完整 bar（含成交额），一次请求覆盖 40 个标的；
+      2. recent_bars：东财取最近 N 根（兜底，仅当快照不可用且缺口较大时）；
+      3. 新浪全历史：首次建档 / 上面都不通时的最终回退，行为与改造前一致。
+
+    所有路径都走 RS.put 的 merge-append：已存在日期不会被改动（write-once 不变）。
+    """
     cached = RS.get("etf", secid)
     if cached and not refresh:
         return cached
+
+    # 1) 批量快照：只有当快照日期确实比 L0 末日期新，且中间没有断档时才采用
+    if cached and refresh and snapshot:
+        last, d = cached[-1]["date"], snapshot.get("date")
+        if d and d > last:
+            from datetime import date as _date
+            try:
+                gap = (_date.fromisoformat(d) - _date.fromisoformat(last)).days
+            except Exception:
+                gap = 999
+            if gap <= 7:
+                RS.put("etf", secid, [snapshot], SOURCE_ETF_TX, overwrite_est=True,
+                       note="不复权;amount单位:元;volume已对齐新浪口径(股);"
+                            "腾讯批量快照增量，merge-append 不改历史")
+                return RS.get("etf", secid) or [snapshot]
+            # gap > 7：漏跑多日，单根快照会造成断档，往下走多根/全量路径
+
+    # 2) 东财最近 N 根（熔断打开时直接返回 None，零开销跳过）
+    if cached and refresh and recent_bars:
+        inc = _fetch_etf_range(secid, recent_bars)
+        if inc:
+            RS.put("etf", secid, inc, SOURCE_ETF_EM, overwrite_est=True,
+                   note=f"不复权;amount单位:元;volume已对齐新浪口径(股);"
+                        f"东财增量 lmt={recent_bars}，merge-append 不改历史")
+            return RS.get("etf", secid) or inc
+
+    # 3) 新浪全历史（首次建档 / 回退）
     sym = ("sh" if secid.startswith("1.") else "sz") + secid.split(".")[-1]
     ak = _ak()
     for attempt in range(3):
