@@ -85,6 +85,12 @@ EM_UT = "7eea3edcaed734bea9cbfc24409ed989"
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
+# 申万官方日线（全历史）：trend/ 不支持任何区间/分页参数，单指数必返 6481 行。
+# 单请求 6~24s 且以服务端生成耗时为多（1.4MB 不是瓶颈），串行 120 只 = 20~40 分钟。
+# 因此校准路径改为「并行取数 + 串行落盘」：压缩的是等待，不是"重复下载"这件事本身。
+SW_TREND_URL = "https://www.swsresearch.com/institute-sw/api/index_publish/trend/"
+SW_FETCH_WORKERS = 8
+
 BENCH_SINA = {  # config.BENCHMARKS 的 market.code -> 新浪符号
     "1.000001": "sh000001", "1.000300": "sh000300", "0.399006": "sz399006",
     "1.000852": "sh000852", "1.000905": "sh000905",
@@ -189,24 +195,99 @@ def fetch_catalog(refresh: bool = False) -> Dict[str, Dict[str, str]]:
 
 
 # ---------------------------------------------------------------- 指数日K
-def fetch_sw_daily(code: str, refresh: bool = False) -> Optional[List[dict]]:
+def _sw_records(data: List[dict]) -> List[dict]:
+    """官方 trend/ 原始 JSON -> 标准记录。字段口径与 akshare.index_hist_sw 一致。"""
+    out: List[dict] = []
+    for x in data:
+        try:
+            out.append({
+                "date": str(x["bargaindate"])[:10],
+                "open": float(x["openindex"]), "close": float(x["closeindex"]),
+                "high": float(x["maxindex"]), "low": float(x["minindex"]),
+                "volume": float(x["bargainamount"]),   # 亿股
+                "amount": float(x["bargainsum"]),      # 亿元
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _fetch_sw_official(code: str, timeout: int = 90) -> Optional[List[dict]]:
+    """直连官方 trend/ 取单指数全历史（纯网络，不落盘）。"""
+    for attempt in range(2):
+        try:
+            r = requests.get(SW_TREND_URL, params={"swindexcode": code, "period": "DAY"},
+                             headers={"User-Agent": _UA}, timeout=timeout, verify=False)
+            recs = _sw_records((r.json() or {}).get("data") or [])
+            if recs:
+                return recs
+        except Exception:
+            time.sleep(1.0 * (attempt + 1))
+    return None
+
+
+def prefetch_sw_official(codes: List[str], workers: int = SW_FETCH_WORKERS,
+                         verbose: bool = False, deadline: float = 0.0) -> Dict[str, List[dict]]:
+    """并行拉一批指数的官方全历史，返回 {code: records}。**只走网络、不写 L0。**
+
+    调用方负责串行落盘：rawstore.put 是「读整份 manifest → 改 → 写回」，
+    并发写会互相覆盖丢条目，因此写入必须单线程。
+
+    deadline（epoch 秒）用于让校准有时间上界：超时未返回的标的留待下次，
+    已有的 est 行保持原样（不会被写坏），verify 会继续提示它们未校准。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    out: Dict[str, List[dict]] = {}
+    done = 0
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_fetch_sw_official, c): c for c in codes}
+        for f in as_completed(futs):
+            code = futs[f]
+            try:
+                recs = f.result()
+            except Exception:
+                recs = None
+            if recs:
+                out[code] = recs
+            done += 1
+            if verbose and done % 25 == 0:
+                print(f"    并发取数 {done}/{len(codes)}（{time.time()-t0:.0f}s，成功 {len(out)}）")
+            if deadline and time.time() > deadline:
+                for g in futs:
+                    g.cancel()
+                if verbose:
+                    print(f"    [warn] 触及时间上限，仅完成 {done}/{len(codes)}，其余留待下次")
+                break
+    if verbose:
+        print(f"    并发取数完成：成功 {len(out)}/{len(codes)}，用时 {time.time()-t0:.0f}s")
+    return out
+
+
+def fetch_sw_daily(code: str, refresh: bool = False,
+                   records: Optional[List[dict]] = None) -> Optional[List[dict]]:
+    """取单指数日K。records 给定时跳过网络（并发预取的产物），只做落盘。"""
     cached = RS.get("sw_index", code)
     if cached and not refresh:
         return cached
-    ak = _ak()
-    for attempt in range(3):
-        try:
-            df = ak.index_hist_sw(symbol=code, period="day")
-            recs = _df_records(df)
-            if recs:
-                # overwrite_est=True：官方值可以覆盖"实时兜底"留下的估算行（est 标记），
-                # 一手数据彼此之间仍然先到先得；这是官方出数后自动修复的唯一通道。
-                RS.put("sw_index", code, recs, SOURCE_SW,
-                       overwrite_est=True,
-                       note="成交量单位:股/亿股口径,成交额:亿元;仅做相对比值使用")
-                return recs
-        except Exception:
-            time.sleep(1.5 * (attempt + 1))
+    if records is None:
+        ak = _ak()
+        for attempt in range(3):
+            try:
+                df = ak.index_hist_sw(symbol=code, period="day")
+                records = _df_records(df)
+                if records:
+                    break
+            except Exception:
+                time.sleep(1.5 * (attempt + 1))
+    if records:
+        # overwrite_est=True：官方值可以覆盖"实时兜底"留下的估算行（est 标记），
+        # 一手数据彼此之间仍然先到先得；这是官方出数后自动修复的唯一通道。
+        RS.put("sw_index", code, records, SOURCE_SW,
+               overwrite_est=True,
+               note="成交量单位:股/亿股口径,成交额:亿元;仅做相对比值使用")
+        return records
     return cached
 
 
@@ -221,7 +302,9 @@ def fetch_bench_daily(market_code: str, refresh: bool = False) -> Optional[List[
             df = ak.stock_zh_index_daily(symbol=sym)
             recs = _sina_records(df, has_amount=False)
             if recs:
-                RS.put("bench", market_code, recs, SOURCE_BENCH,
+                # overwrite_est=True：基准的实时快照行也带 est，官方日线出数后必须能覆盖，
+                # 否则 est 标记会永久留在 L0（verify 会一直报"未校准"）。
+                RS.put("bench", market_code, recs, SOURCE_BENCH, overwrite_est=True,
                        note="新浪指数日K无成交额列, amount=0; 基准不参与量能打分")
                 return recs
         except Exception:
@@ -340,7 +423,9 @@ def fetch_bench_snapshot() -> Dict[str, dict]:
             if min(o, c, hi, lo) <= 0:
                 continue
             out[mc] = {"date": b[30], "open": o, "close": c, "high": hi, "low": lo,
-                       "volume": float(b[8] or 0.0), "amount": 0.0, "est": True,
+                       # 新浪实时第 8 字段是「手」，日线 volume 是「股」——统一乘 100，
+                       # 否则 est 行与官方行的量纲差 100 倍（实测 801010 系基准全中）。
+                       "volume": float(b[8] or 0.0) * 100.0, "amount": 0.0, "est": True,
                        "note": "新浪实时行情快照；官方日线出数后由 overwrite_est 覆盖"}
         except (ValueError, IndexError):
             continue
@@ -1136,9 +1221,9 @@ def build_panel(refresh: bool = False, full: bool = False, verbose: bool = True)
 
     refresh=True 且 full=False：先走「批量快照增量」（2~3 次请求、秒级），把当日
     bar 以 est 标记写进 L0，再离线组装 panel —— 这是日常路径。
-    full=True：官方日线全量重下（120 个指数 × 20 年，约 365MB / 40 分钟），
-    同时用 overwrite_est 把此前的估算行换成官方真值 —— 这是校准路径。
-    增量失败（源改版、对不上历史等）时自动退回全量，不会静默少一天。
+    full=True：官方日线全量重下（每只必返 20 年全历史），用 overwrite_est 把此前的
+    估算行换成官方真值 —— 这是校准路径。取数改为 8 路并发（串行时约 20~40 分钟），
+    落盘仍串行。增量失败（源改版、对不上历史等）时自动退回全量，不会静默少一天。
     """
     incr = None
     if refresh and not full:
@@ -1160,6 +1245,14 @@ def build_panel(refresh: bool = False, full: bool = False, verbose: bool = True)
     series: Dict[str, Dict[str, dict]] = {}
     meta: Dict[str, dict] = {}
     missing: List[str] = []
+    # 校准路径（full=True）：官方 trend/ 只能整段取，120 只串行是 20~40 分钟。
+    # 先并行把全历史取回内存（只走网络），再按 universe 顺序串行落盘 —— 落盘必须
+    # 单线程，因为 rawstore.put 是「读整份 manifest → 改 → 写回」。
+    prefetched: Dict[str, List[dict]] = {}
+    if full and universe:
+        if verbose:
+            print(f"  官方全量：并行 {SW_FETCH_WORKERS} 路拉取 {len(universe)} 个指数全历史...")
+        prefetched = prefetch_sw_official(list(universe.keys()), verbose=verbose)
     # 增量只覆盖一级/二级行业；三级行业（85xxxx）快照里没有，会落后一天。
     # 对这类「落后于增量日」的标的做定向官方补抓（单只约 10s，通常 3~5 只），
     # 而不是为了它们把 120 只全部重下。
@@ -1168,7 +1261,7 @@ def build_panel(refresh: bool = False, full: bool = False, verbose: bool = True)
     lagging: List[str] = []      # 快照未覆盖且官方当日也没出（通常是三级行业）
     official_dead = False        # 试过一次官方补抓仍不达标，就不再为每个标的各等 10s
     for i, (code, u) in enumerate(universe.items()):
-        recs = fetch_sw_daily(code, refresh=full)
+        recs = fetch_sw_daily(code, refresh=full, records=prefetched.get(code))
         if target and recs and recs[-1]["date"] < target:
             if official_dead:
                 lagging.append(code)
@@ -1187,8 +1280,7 @@ def build_panel(refresh: bool = False, full: bool = False, verbose: bool = True)
         meta[code] = {"name": u["name"], "level": u["level"]}
         if verbose and (i + 1) % 25 == 0:
             print(f"  指数进度 {i+1}/{len(universe)}")
-        if full:
-            time.sleep(0.2)      # 全量是打网络；增量只是读本地文件，不必节流
+        # 全量路径的网络请求已在 prefetch 里并行完成，这里只剩本地落盘，无需节流
 
     bench_series = {}
     for mc, name in C.BENCHMARKS.items():
