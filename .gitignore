@@ -19,10 +19,18 @@ cache/
 # 使 experiments.json 等登记簿文件静默不入库。
 /data/
 
-# L3 派生逐日数据（约 110MB × 2 份，可由 engine 重跑生成，不入库）
+# L3 派生逐日数据（约 104MB × 2 份，可由 engine 重跑生成）
 # 上层 history/review/today/experiments 四个 json 仍入库（体积小、前端直接依赖）
+#
+# 为什么 site/data/day 必须入库（2026-10-30 修正）：
+#   GitHub Pages 的 workflow 打包的是 **CI checkout 出来的 site/**，而 CI 里没有
+#   本机的 cache/ 与 L0，无法重跑 pipeline 生成 day。所以只要这个目录被忽略，
+#   Pages 上的 /data/day/* 就全是 404 —— 首页能开、历史曲线与复盘页全废。
+#   （实测：改前 https://hicooper.github.io/chaos-ark-next/data/day/2016-01-04.json → 404）
+#   site/ 是**部署产物**，发布出去什么样就该在仓库里是什么样，故入库。
+#   web/public/data/day 是工作区中间产物，不入库；daily 时由 sync_site 镜像到 site/。
 web/public/data/day/
-site/data/day/
+!site/data/day/
 
 # 逐日「建仓计划块」已于 2026-09-23 废弃，改由单文件 web/public/data/sim.json 提供
 # （「我的持仓」影子账户的完整输入：逐日候选 + 前复权开/收盘价，约 1.2MB，入库）

@@ -1,0 +1,33 @@
+name: Probe Datasource
+
+# 一次性探测：这台 runner（Azure 境外出口）能否访问 ARK 依赖的国内数据源。
+#
+# 为什么要探：若境外出口能稳定抓申万官方日线 + 新浪 ETF，整条链路就可以完全托管在
+# GitHub Actions 上（凌晨 cron → 抓数 → 管线 → commit site/ → Pages 自动发布），
+# 不需要任何常开机器；反之必须上国内 VPS。
+#
+# 本 workflow 只读：不写仓库、不发布、不改数据，跑完即弃。
+# 触发方式：Actions 页面手动 Run workflow（仅 workflow_dispatch，不会自动跑）。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install --quiet akshare requests urllib3
+
+      - name: Probe
+        run: python engine/probe_remote.py
